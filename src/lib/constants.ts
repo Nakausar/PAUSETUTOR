@@ -4,8 +4,9 @@ export const PHASES: { key: PausePhase; letter: string; label: string; full: str
   { key: 'plan', letter: 'P', label: 'Plan', full: 'Plan' },
   { key: 'attempt', letter: 'A', label: 'Attempt', full: 'Attempt' },
   { key: 'use_ai', letter: 'U', label: 'Use AI', full: 'Use AI Strategically' },
-  { key: 'scrutinise', letter: 'S', label: 'Scrutinise & Revise', full: 'Scrutinise & Revise' },
-  { key: 'evaluate', letter: 'E', label: 'Evaluate & Reflect', full: 'Evaluate & Reflect' },
+  { key: 'scrutinise', letter: 'S', label: 'Scrutinise', full: 'Scrutinise & Revise' },
+  { key: 'edit', letter: 'E', label: 'Edit', full: 'Edit / Revise' },
+  { key: 'evaluate', letter: 'R', label: 'Reflect', full: 'Evaluate & Reflect' },
 ];
 
 export const PHASE_LABELS: Record<PausePhase, string> = {
@@ -13,8 +14,19 @@ export const PHASE_LABELS: Record<PausePhase, string> = {
   attempt: 'Attempt',
   use_ai: 'Use AI Strategically',
   scrutinise: 'Scrutinise & Revise',
+  edit: 'Edit / Revise',
   evaluate: 'Evaluate & Reflect',
   completed: 'Completed',
+};
+
+// Accent palette per PAUSE phase — used for navigator icons, active highlights and borders only.
+export const PHASE_COLORS: Record<'plan' | 'attempt' | 'use_ai' | 'scrutinise' | 'edit' | 'evaluate', { accent: string; accentSoft: string; accentSofter: string; label: string }> = {
+  plan: { accent: '#2563EB', accentSoft: 'rgba(37, 99, 235, 0.12)', accentSofter: 'rgba(37, 99, 235, 0.06)', label: 'Blue' },
+  attempt: { accent: '#7C3AED', accentSoft: 'rgba(124, 58, 237, 0.12)', accentSofter: 'rgba(124, 58, 237, 0.06)', label: 'Violet' },
+  use_ai: { accent: '#F59E0B', accentSoft: 'rgba(245, 158, 11, 0.14)', accentSofter: 'rgba(245, 158, 11, 0.07)', label: 'Amber' },
+  scrutinise: { accent: '#0D9488', accentSoft: 'rgba(13, 148, 136, 0.12)', accentSofter: 'rgba(13, 148, 136, 0.06)', label: 'Teal' },
+  edit: { accent: '#16A34A', accentSoft: 'rgba(22, 163, 74, 0.12)', accentSofter: 'rgba(22, 163, 74, 0.06)', label: 'Green' },
+  evaluate: { accent: '#4F46E5', accentSoft: 'rgba(79, 70, 229, 0.12)', accentSofter: 'rgba(79, 70, 229, 0.06)', label: 'Indigo' },
 };
 
 export const AI_CATEGORIES: { key: AICategory; label: string; description: string; icon: string }[] = [

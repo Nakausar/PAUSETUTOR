@@ -1,6 +1,6 @@
 export type UserRole = 'student' | 'researcher';
 
-export type PausePhase = 'plan' | 'attempt' | 'use_ai' | 'scrutinise' | 'evaluate' | 'completed';
+export type PausePhase = 'plan' | 'attempt' | 'use_ai' | 'scrutinise' | 'edit' | 'evaluate' | 'completed';
 
 export type SessionStatus = 'in_progress' | 'completed' | 'abandoned';
 
@@ -47,6 +47,7 @@ export type EventType =
   | 'PLAN_COMPLETED'
   | 'PLAN_EDITED'
   | 'PLAN_SUBMITTED'
+  | 'PLAN_REVISED'
   // Attempt
   | 'ATTEMPT_STARTED'
   | 'CODE_EDIT'
@@ -97,7 +98,9 @@ export type EventType =
   | 'TASK_ASSIGNED'
   | 'SESSION_STARTED'
   // Transitions
-  | 'PHASE_TRANSITION';
+  | 'PHASE_TRANSITION'
+  | 'PHASE_ENTERED'
+  | 'PHASE_EXITED';
 
 export interface Profile {
   id: string;
@@ -169,6 +172,8 @@ export interface Plan {
   participant_id: string;
   plan_text: string;
   confidence: PlanConfidence | null;
+  version: number | null;
+  created_after_ai: boolean | null;
   created_at: string;
   updated_at: string;
 }

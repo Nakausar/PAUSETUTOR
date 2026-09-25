@@ -59,7 +59,7 @@ export default function StudentDashboard() {
 
   function getCompletedPhases(session: Session): Set<PausePhase> {
     const phases = new Set<PausePhase>();
-    const order = ['plan', 'attempt', 'use_ai', 'scrutinise', 'evaluate', 'completed'];
+    const order: PausePhase[] = ['plan', 'attempt', 'use_ai', 'scrutinise', 'edit', 'evaluate', 'completed'];
     const idx = order.indexOf(session.current_phase);
     for (let i = 0; i < idx; i++) phases.add(order[i] as PausePhase);
     return phases;
