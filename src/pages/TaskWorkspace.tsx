@@ -135,16 +135,18 @@ export default function TaskWorkspace() {
     setLoading(false);
   }
 
-  // Controlled flexible navigation: Plan then a meaningful Attempt are required before AI.
+  // Controlled flexible navigation: Plan → meaningful Attempt gate the workflow; Scrutinise needs an AI response to evaluate.
+  // All conditions are monotonic (once true they stay true), so unlocked phases never re-lock before completion.
   function enabledPhases(): Set<PausePhase> {
+    const planSubmitted = originalPlan !== null || latestPlan !== null;
     const meaningfulAttempt = Boolean(attempt && attempt.current_code.trim().length > 0);
+    const hasAiResponse = aiInteractions.length > 0;
     const unlocked = new Set<PausePhase>(['plan']);
-    if (originalPlan || latestPlan) unlocked.add('plan');
-    if (originalPlan) { unlocked.add('attempt'); }
-    if (originalPlan && meaningfulAttempt) {
-      unlocked.add('use_ai'); unlocked.add('scrutinise'); unlocked.add('edit'); unlocked.add('evaluate');
-    }
-    if (phase === 'completed') unlocked.add('completed');
+    if (planSubmitted) unlocked.add('attempt');
+    if (planSubmitted && meaningfulAttempt) unlocked.add('use_ai');
+    if (hasAiResponse) unlocked.add('scrutinise');
+    if (meaningfulAttempt) unlocked.add('edit');
+    if (planSubmitted && meaningfulAttempt) unlocked.add('evaluate');
     return unlocked;
   }
 
