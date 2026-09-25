@@ -15,6 +15,28 @@ export type AICategory =
 
 export type ScrutinyAction = 'accepted' | 'modified' | 'rejected' | '';
 
+export type PlanConfidence = 1 | 2 | 3 | 4 | 5;
+
+export type AccuracyJudgment = 'correct' | 'mostly_correct' | 'partly_correct' | 'incorrect' | 'unsure';
+
+export type IntendedAction = 'test' | 'modify' | 'use_part' | 'own_version' | 'clarify' | 'reject';
+
+export type DifficultyChoice =
+  | 'understanding_problem'
+  | 'planning'
+  | 'writing_code'
+  | 'debugging'
+  | 'understanding_ai'
+  | 'checking_ai'
+  | 'testing'
+  | 'nothing_difficult';
+
+export type PerceivedIndependence = 'almost_all' | 'most' | 'about_half' | 'small_part' | 'very_little';
+
+export type AiDisagreement = 'yes' | 'partly' | 'no' | 'unsure';
+
+export type PerceivedIndependentAbility = 'definitely_yes' | 'probably_yes' | 'not_sure' | 'probably_no' | 'definitely_no';
+
 export type EventType =
   // Plan
   | 'PLAN_STARTED'
@@ -23,6 +45,8 @@ export type EventType =
   | 'PLAN_CREATED'
   | 'PSEUDOCODE_CREATED'
   | 'PLAN_COMPLETED'
+  | 'PLAN_EDITED'
+  | 'PLAN_SUBMITTED'
   // Attempt
   | 'ATTEMPT_STARTED'
   | 'CODE_EDIT'
@@ -52,6 +76,10 @@ export type EventType =
   | 'AI_SUGGESTION_ACCEPTED'
   | 'AI_SUGGESTION_MODIFIED'
   | 'AI_SUGGESTION_REJECTED'
+  | 'AI_ACCURACY_RATING'
+  | 'INTENDED_AI_UPTAKE'
+  | 'AI_CRITIQUE_TEXT'
+  | 'SCRUTINISE_SUBMITTED'
   | 'CODE_REVISED'
   | 'ERROR_FIXED'
   | 'SCRUTINY_COMPLETED'
@@ -63,6 +91,7 @@ export type EventType =
   | 'SELF_EVALUATION'
   | 'CONFIDENCE_RECORDED'
   | 'REFLECTION_COMPLETED'
+  | 'REFLECTION_SUBMITTED'
   | 'TASK_COMPLETED'
   // Assignment and session lifecycle
   | 'TASK_ASSIGNED'
@@ -138,13 +167,8 @@ export interface Plan {
   session_id: string;
   student_id: string;
   participant_id: string;
-  problem_summary: string;
-  expected_inputs: string;
-  expected_outputs: string;
-  concepts_needed: string;
-  approach_description: string;
-  pseudocode: string;
-  expected_difficulty: string;
+  plan_text: string;
+  confidence: PlanConfidence | null;
   created_at: string;
   updated_at: string;
 }
@@ -201,11 +225,10 @@ export interface ScrutinyResponse {
   ai_interaction_id: string | null;
   student_id: string;
   participant_id: string;
-  ai_summary: string;
-  is_correct_assessment: string;
-  testing_plan: string;
+  accuracy_judgment: AccuracyJudgment | '';
+  intended_action: IntendedAction | '';
+  critique_text: string;
   action_taken: ScrutinyAction;
-  changes_description: string;
   revised_code: string;
   code_before: string;
   code_after: string;
@@ -220,14 +243,15 @@ export interface Reflection {
   session_id: string;
   student_id: string;
   participant_id: string;
-  solution_explanation: string;
-  what_was_learned: string;
-  most_difficult_part: string;
-  useful_ai_assistance: string;
-  ai_issue_identified: string;
-  changes_after_ai: string;
-  do_differently_next_time: string;
-  confidence_without_ai: number;
+  difficulty: DifficultyChoice | '';
+  perceived_independence: PerceivedIndependence | '';
+  ai_help_reflection: string;
+  ai_disagreement: AiDisagreement | '';
+  ai_disagreement_text: string;
+  perceived_independent_ability: PerceivedIndependentAbility | '';
+  most_important_learning: string;
+  next_time_strategy: string;
+  confidence: PlanConfidence | null;
   created_at: string;
   updated_at: string;
 }

@@ -105,7 +105,7 @@ async function fetchCodeSnapshots(): Promise<ExportRow[]> {
 async function fetchReflections(): Promise<ExportRow[]> {
   const { data } = await supabase
     .from('reflections')
-    .select('id, participant_id, session_id, solution_explanation, what_was_learned, most_difficult_part, useful_ai_assistance, ai_issue_identified, changes_after_ai, do_differently_next_time, confidence_without_ai, created_at')
+    .select('id, participant_id, session_id, difficulty, perceived_independence, ai_help_reflection, ai_disagreement, ai_disagreement_text, perceived_independent_ability, most_important_learning, next_time_strategy, confidence, created_at')
     .order('created_at', { ascending: true });
   return (data ?? []).map((r) => flattenRow(r as Record<string, unknown>));
 }

@@ -72,31 +72,56 @@ export const AI_CATEGORY_LABELS: Record<AICategory, string> = {
   solution_request: 'Complete solution request',
 };
 
-export const PLAN_FIELDS = [
-  { key: 'problem_summary', label: 'What is the problem asking you to do?', placeholder: 'Describe the problem in your own words...' },
-  { key: 'expected_inputs', label: 'What are the expected inputs?', placeholder: 'What data will the program receive?' },
-  { key: 'expected_outputs', label: 'What are the expected outputs?', placeholder: 'What should the program produce?' },
-  { key: 'concepts_needed', label: 'What programming concepts might you need?', placeholder: 'e.g. loops, conditionals, functions, lists...' },
-  { key: 'approach_description', label: 'Describe your proposed solution approach', placeholder: 'How do you plan to solve this step by step?' },
-  { key: 'pseudocode', label: 'Write pseudocode or step-by-step logic', placeholder: 'Write pseudocode here if helpful...' },
-  { key: 'expected_difficulty', label: 'What part of the problem do you expect to be difficult?', placeholder: 'Which part do you think will be hardest?' },
+export const AI_HELP_REFLECTION_OPTIONS = AI_CATEGORIES.map((c) => ({ key: c.key, label: c.label }));
+
+export const REFLECT_CONSTANTS = {
+  difficulty: [
+    { key: 'understanding_problem', label: 'Understanding the problem' },
+    { key: 'planning', label: 'Planning' },
+    { key: 'writing_code', label: 'Writing the code' },
+    { key: 'debugging', label: 'Debugging' },
+    { key: 'understanding_ai', label: 'Understanding the AI response' },
+    { key: 'checking_ai', label: 'Checking whether the AI was correct' },
+    { key: 'testing', label: 'Testing' },
+    { key: 'nothing_difficult', label: 'Nothing particularly difficult' },
+  ],
+  perceived_independence: [
+    { key: 'almost_all', label: 'Almost all' },
+    { key: 'most', label: 'Most' },
+    { key: 'about_half', label: 'About half' },
+    { key: 'small_part', label: 'A small part' },
+    { key: 'very_little', label: 'Very little' },
+  ],
+  ai_disagreement: [
+    { key: 'yes', label: 'Yes' },
+    { key: 'partly', label: 'Partly' },
+    { key: 'no', label: 'No' },
+    { key: 'unsure', label: 'Unsure' },
+  ],
+  perceived_independent_ability: [
+    { key: 'definitely_yes', label: 'Definitely yes' },
+    { key: 'probably_yes', label: 'Probably yes' },
+    { key: 'not_sure', label: 'Not sure' },
+    { key: 'probably_no', label: 'Probably no' },
+    { key: 'definitely_no', label: 'Definitely no' },
+  ],
+} as const;
+
+export const ACCURACY_JUDGMENT_OPTIONS = [
+  { key: 'correct', label: 'Correct' },
+  { key: 'mostly_correct', label: 'Mostly correct' },
+  { key: 'partly_correct', label: 'Partly correct' },
+  { key: 'incorrect', label: 'Incorrect' },
+  { key: 'unsure', label: 'Unsure' },
 ] as const;
 
-export const REFLECTION_FIELDS = [
-  { key: 'solution_explanation', label: 'Briefly explain your final solution in your own words.', placeholder: 'Describe how your solution works...' },
-  { key: 'what_was_learned', label: 'What did you learn from this task?', placeholder: 'What new understanding did you gain?' },
-  { key: 'most_difficult_part', label: 'What was the most difficult part?', placeholder: 'Where did you struggle most?' },
-  { key: 'useful_ai_assistance', label: 'What AI assistance was useful?', placeholder: 'Which AI help was genuinely helpful?' },
-  { key: 'ai_issue_identified', label: 'Did you identify any AI suggestion that was incorrect, incomplete, or needed modification?', placeholder: 'Did the AI get anything wrong or incomplete?' },
-  { key: 'changes_after_ai', label: 'What did you change after receiving AI assistance?', placeholder: 'How did you modify your code after AI help?' },
-  { key: 'do_differently_next_time', label: 'What would you do differently next time?', placeholder: 'How would you approach a similar problem differently?' },
-] as const;
-
-export const SCRUTINY_FIELDS = [
-  { key: 'ai_summary', label: 'What does the AI suggestion recommend?', placeholder: 'Summarise the AI recommendation...' },
-  { key: 'is_correct_assessment', label: 'Do you think this suggestion is correct? Why?', placeholder: 'Assess whether the suggestion is right and why...' },
-  { key: 'testing_plan', label: 'How will you test it?', placeholder: 'What test cases will you use?' },
-  { key: 'changes_description', label: 'What did you change?', placeholder: 'Describe the modifications you made...' },
+export const INTENDED_ACTION_OPTIONS = [
+  { key: 'test', label: 'Test it' },
+  { key: 'modify', label: 'Modify it' },
+  { key: 'use_part', label: 'Use part of it' },
+  { key: 'own_version', label: 'Write my own version' },
+  { key: 'clarify', label: 'Ask for clarification' },
+  { key: 'reject', label: 'Reject it' },
 ] as const;
 
 export const DEFAULT_SYSTEM_PROMPT = `You are the PAUSE AI Tutor, an educational programming assistant. Your purpose is to support student learning without unnecessarily replacing student reasoning.
