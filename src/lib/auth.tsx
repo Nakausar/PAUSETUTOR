@@ -29,6 +29,9 @@ function formatAuthError(message: string, action: 'signin' | 'signup'): string {
   if (normalized.includes('password') && normalized.includes('at least')) {
     return 'Your password must be at least 6 characters long.';
   }
+  if (normalized.includes('weak') || normalized.includes('easy to guess')) {
+    return 'That password is too common or easy to guess. Please choose a stronger, more unique password.';
+  }
   if (normalized.includes('rate limit') || normalized.includes('too many')) {
     return 'Too many attempts were made. Please wait a moment and try again.';
   }
@@ -94,7 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password,
       options: { data: { role, consent_acknowledged: consent } },
     });
-    if (error) return { error: formatAuthError(error.message, 'signup') };
+    if (error) {
+      console.error('Signup failed:', { message: error.message, name: error.name, status: error.status });
+      return { error: formatAuthError(error.message, 'signup') };
+    }
     if (!data.user) return { error: 'We could not create your account. Please try again.' };
 
     if (!data.session) {
@@ -115,7 +121,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: email.trim().toLowerCase(),
       password,
     });
-    if (error) return { error: formatAuthError(error.message, 'signin') };
+    if (error) {
+      console.error('Sign in failed:', { message: error.message, name: error.name, status: error.status });
+      return { error: formatAuthError(error.message, 'signin') };
+    }
     if (!data.session || !data.user) return { error: 'We could not start your session. Please try again.' };
 
     setSession(data.session);
