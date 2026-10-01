@@ -4,18 +4,18 @@ export const PHASES: { key: PausePhase; letter: string; label: string; full: str
   { key: 'plan', letter: 'P', label: 'Plan', full: 'Plan' },
   { key: 'attempt', letter: 'A', label: 'Attempt', full: 'Attempt' },
   { key: 'use_ai', letter: 'U', label: 'Use AI', full: 'Use AI Strategically' },
-  { key: 'scrutinise', letter: 'S', label: 'Scrutinise', full: 'Scrutinise & Revise' },
-  { key: 'edit', letter: 'E', label: 'Edit', full: 'Edit / Revise' },
-  { key: 'evaluate', letter: 'R', label: 'Reflect', full: 'Evaluate & Reflect' },
+  { key: 'scrutinise', letter: 'S', label: 'Scrutinise', full: 'Scrutinise' },
+  { key: 'edit', letter: 'E', label: 'Edit', full: 'Edit' },
+  { key: 'evaluate', letter: 'V', label: 'Evaluate', full: 'Evaluate' },
 ];
 
 export const PHASE_LABELS: Record<PausePhase, string> = {
   plan: 'Plan',
   attempt: 'Attempt',
   use_ai: 'Use AI Strategically',
-  scrutinise: 'Scrutinise & Revise',
-  edit: 'Edit / Revise',
-  evaluate: 'Evaluate & Reflect',
+  scrutinise: 'Scrutinise',
+  edit: 'Edit',
+  evaluate: 'Evaluate',
   completed: 'Completed',
 };
 
