@@ -17,8 +17,10 @@ type ExportCategory =
   | 'participants'
   | 'sessions'
   | 'tasks'
+  | 'plans'
   | 'event_logs'
   | 'ai_interactions'
+  | 'scrutiny_responses'
   | 'code_snapshots'
   | 'reflections'
   | 'task_outcomes';
@@ -78,6 +80,15 @@ async function fetchTasks(): Promise<ExportRow[]> {
   return (data ?? []).map((r) => flattenRow(r as Record<string, unknown>));
 }
 
+async function fetchPlans(): Promise<ExportRow[]> {
+  // Includes legacy plan fields (problem_summary, pseudocode, ...) so historical rows export fully.
+  const { data } = await supabase
+    .from('plans')
+    .select('id, participant_id, session_id, student_id, plan_text, confidence, version, created_after_ai, problem_summary, expected_inputs, expected_outputs, concepts_needed, approach_description, pseudocode, expected_difficulty, created_at, updated_at')
+    .order('created_at', { ascending: true });
+  return (data ?? []).map((r) => flattenRow(r as Record<string, unknown>));
+}
+
 async function fetchEventLogs(): Promise<ExportRow[]> {
   const { data } = await supabase
     .from('event_logs')
@@ -90,6 +101,15 @@ async function fetchAIInteractions(): Promise<ExportRow[]> {
   const { data } = await supabase
     .from('ai_interactions')
     .select('id, participant_id, session_id, category, prompt, response, context_code, context_error, full_solution_requested, created_at')
+    .order('created_at', { ascending: true });
+  return (data ?? []).map((r) => flattenRow(r as Record<string, unknown>));
+}
+
+async function fetchScrutinyResponses(): Promise<ExportRow[]> {
+  // ai_interaction_id links each scrutiny record to the AI response it evaluates.
+  const { data } = await supabase
+    .from('scrutiny_responses')
+    .select('id, participant_id, session_id, student_id, ai_interaction_id, accuracy_judgment, intended_action, critique_text, action_taken, revised_code, code_before, code_after, test_result, produced_expected_result, ai_summary, is_correct_assessment, testing_plan, changes_description, created_at, updated_at')
     .order('created_at', { ascending: true });
   return (data ?? []).map((r) => flattenRow(r as Record<string, unknown>));
 }
@@ -125,8 +145,10 @@ const FETCHERS: Record<ExportCategory, () => Promise<ExportRow[]>> = {
   participants: fetchParticipants,
   sessions: fetchSessions,
   tasks: fetchTasks,
+  plans: fetchPlans,
   event_logs: fetchEventLogs,
   ai_interactions: fetchAIInteractions,
+  scrutiny_responses: fetchScrutinyResponses,
   code_snapshots: fetchCodeSnapshots,
   reflections: fetchReflections,
   task_outcomes: fetchTaskOutcomes,
@@ -161,8 +183,8 @@ export function exportAsJSON(rows: ExportRow[], filename: string) {
 export async function exportAllAsZIP() {
   // Simple: download each category as a separate file
   const categories: ExportCategory[] = [
-    'participants', 'sessions', 'tasks', 'event_logs',
-    'ai_interactions', 'code_snapshots', 'reflections', 'task_outcomes',
+    'participants', 'sessions', 'tasks', 'plans', 'event_logs',
+    'ai_interactions', 'scrutiny_responses', 'code_snapshots', 'reflections', 'task_outcomes',
   ];
   for (const cat of categories) {
     const rows = await fetchExportData(cat);
