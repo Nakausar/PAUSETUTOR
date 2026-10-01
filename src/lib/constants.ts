@@ -6,7 +6,7 @@ export const PHASES: { key: PausePhase; letter: string; label: string; full: str
   { key: 'use_ai', letter: 'U', label: 'Use AI', full: 'Use AI Strategically' },
   { key: 'scrutinise', letter: 'S', label: 'Scrutinise', full: 'Scrutinise' },
   { key: 'edit', letter: 'E', label: 'Edit', full: 'Edit' },
-  { key: 'evaluate', letter: 'V', label: 'Evaluate', full: 'Evaluate' },
+  { key: 'evaluate', letter: 'E', label: 'Evaluate', full: 'Evaluate' },
 ];
 
 export const PHASE_LABELS: Record<PausePhase, string> = {
