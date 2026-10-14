@@ -9,6 +9,8 @@ import TaskManagement from '@/pages/TaskManagement';
 import DataExport from '@/pages/DataExport';
 import SystemSettingsPage from '@/pages/SystemSettingsPage';
 import SessionTimeline from '@/pages/SessionTimeline';
+import SessionAssessment from '@/pages/SessionAssessment';
+import TaskResults from '@/pages/TaskResults';
 
 function ProtectedRoute({ children, requireRole }: { children: React.ReactNode; requireRole?: 'student' | 'researcher' }) {
   const { profile, loading } = useAuth();
@@ -53,8 +55,10 @@ function AppRoutes() {
         <Route path="/dashboard" element={<ProtectedRoute requireRole="student"><AppShell><StudentDashboard /></AppShell></ProtectedRoute>} />
         <Route path="/task/start/:taskId" element={<ProtectedRoute requireRole="student"><AppShell><TaskWorkspace /></AppShell></ProtectedRoute>} />
         <Route path="/task/:sessionId" element={<ProtectedRoute requireRole="student"><AppShell><TaskWorkspace /></AppShell></ProtectedRoute>} />
+        <Route path="/task/:sessionId/results" element={<ProtectedRoute requireRole="student"><AppShell><TaskResults /></AppShell></ProtectedRoute>} />
         <Route path="/researcher" element={<ProtectedRoute requireRole="researcher"><AppShell><ResearcherDashboard /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/session/:sessionId" element={<ProtectedRoute requireRole="researcher"><AppShell><SessionTimeline /></AppShell></ProtectedRoute>} />
+        <Route path="/researcher/session/:sessionId/assessment" element={<ProtectedRoute requireRole="researcher"><AppShell><SessionAssessment /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/tasks" element={<ProtectedRoute requireRole="researcher"><AppShell><TaskManagement /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/export" element={<ProtectedRoute requireRole="researcher"><AppShell><DataExport /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/settings" element={<ProtectedRoute requireRole="researcher"><AppShell><SystemSettingsPage /></AppShell></ProtectedRoute>} />

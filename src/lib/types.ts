@@ -283,3 +283,39 @@ export interface SystemSettings {
   updated_at: string;
   updated_by: string | null;
 }
+
+export type MetacognitiveRating =
+  | 'excellent'
+  | 'good'
+  | 'needs_improvement'
+  | 'not_observed'
+  | 'not_applicable';
+
+export type AssessmentStatus = 'pending' | 'approved';
+
+export interface Assessment {
+  id: string;
+  session_id: string;
+  task_id: string | null;
+  student_id: string | null;
+  participant_id: string;
+  status: AssessmentStatus;
+  ai_suggested_at: string | null;
+  ai_suggested_mark: number | null;
+  ai_programming_feedback: string | null;
+  ai_suggested_planning: MetacognitiveRating | null;
+  ai_suggested_monitoring: MetacognitiveRating | null;
+  ai_suggested_scrutiny: MetacognitiveRating | null;
+  ai_suggested_evaluation: MetacognitiveRating | null;
+  approved_mark: number | null;
+  programming_feedback: string | null;
+  metacog_planning: MetacognitiveRating | null;
+  metacog_monitoring: MetacognitiveRating | null;
+  metacog_scrutiny: MetacognitiveRating | null;
+  metacog_evaluation: MetacognitiveRating | null;
+  evidence_refs: Record<string, unknown>;
+  approved_at: string | null;
+  approved_by: string | null;
+  created_at: string;
+  updated_at: string;
+}

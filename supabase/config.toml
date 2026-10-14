@@ -1,0 +1,10 @@
+project_id = "pause-ai-tutor"
+
+[functions.ai-tutor]
+verify_jwt = true
+
+[functions.run-python]
+verify_jwt = false
+
+[functions.ai-assessor]
+verify_jwt = true
