@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, CircleDot, Clock, Code2, ClipboardCheck, MessageSquare, RotateCcw } from 'lucide-react';
+import { ArrowLeft, CircleDot, Clock, Code2, ClipboardCheck, MessageSquare, } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { PHASE_LABELS } from '@/lib/constants';

@@ -145,8 +145,7 @@ Deno.serve(async (req: Request) => {
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch {
     return new Response(
       JSON.stringify({
         stdout: "",

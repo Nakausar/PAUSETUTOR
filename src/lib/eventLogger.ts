@@ -43,10 +43,3 @@ export async function logEvent(params: LogEventParams): Promise<string | null> {
   return data?.id ?? null;
 }
 
-/**
- * Convenience helper that resolves the current user id inline.
- */
-async function getCurrentUserId(): Promise<string | null> {
-  const { data } = await supabase.auth.getUser();
-  return data.user?.id ?? null;
-}
