@@ -1,17 +1,4 @@
 import { supabase } from './supabase';
-import type {
-  AIInteraction,
-  CodeAttempt,
-  CodeSnapshot,
-  EventLog,
-  Plan,
-  Profile,
-  Reflection,
-  ScrutinyResponse,
-  Session,
-  Task,
-  TaskAssignment,
-} from './types';
 
 type ExportCategory =
   | 'participants'

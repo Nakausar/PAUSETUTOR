@@ -42,8 +42,6 @@ export const RESEARCH_QUESTIONS: { id: string; title: string; question: string; 
 
 /** Data-quality panel: missing values, incomplete sessions, duplicates, timestamp inconsistencies. */
 export function dataQuality(b: ResearchBundle) {
-  const sessionsById = new Map(b.sessions.map((s) => [s.id, s]));
-
   const eventIssues = b.events.map((e) => {
     const issues: string[] = [];
     if (!e.event_description) issues.push('missing description');
@@ -132,7 +130,6 @@ export function sessionIndicatorRows(bundle: ResearchBundle) {
   const aiFreq = aiRequestFrequency(bundle);
   const behaviour = attemptVsAiFirst(bundle);
   const quality = scrutinyQuality(bundle);
-  const prepost = prePostCode(bundle);
   return bundle.sessions.map((s) => {
     const sessionEvents = bundle.events.filter((e) => e.session_id === s.id);
     const sessionAi = bundle.aiInteractions.filter((a) => a.session_id === s.id);
@@ -154,7 +151,11 @@ export function sessionIndicatorRows(bundle: ResearchBundle) {
       scrutiny_responses: sessionScrutiny.length,
       scrutiny_quality_mean: qualityScores.length ? qualityScores.reduce((a, c) => a + c, 0) / qualityScores.length : null,
       behaviour_class: classRow?.class ?? '',
-      prepost_code_changed_count: sessionScrutiny.filter((x) => (x.code_before ?? '').trim() !== '' && (x.code_after ?? '').trim() !== '' && (x.code_before ?? '').replace(/\s+/g, ' ').trim() !== (x.code_after ?? '').replace(/\s+/g, ' ').trim()).length,
+      prepost_code_changed_count: sessionScrutiny.filter((x) => {
+        const before = (x.code_before ?? '').replace(/\s+/g, ' ').trim();
+        const after = (x.code_after ?? '').replace(/\s+/g, ' ').trim();
+        return before !== '' && after !== '' && before !== after;
+      }).length,
       completion_share_pct: completion.rate.toFixed(1),
       events_per_participant: engagement.eventsPerParticipant.toFixed(2),
       ai_requests_per_session_with_ai: aiFreq.requestsPerSession.toFixed(2),

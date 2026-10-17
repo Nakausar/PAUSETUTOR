@@ -35,12 +35,13 @@ export interface ResearchBundle {
 export interface ResearchFilters {
   participantId: string;
   taskId: string;
+  sessionId: string;
   from: string;
   to: string;
   status: string;
 }
 
-export const EMPTY_FILTERS: ResearchFilters = { participantId: 'all', taskId: 'all', from: '', to: '', status: 'all' };
+export const EMPTY_FILTERS: ResearchFilters = { participantId: 'all', taskId: 'all', sessionId: 'all', from: '', to: '', status: 'all' };
 
 /**
  * Loads all research tables once for the researcher analytics platform.
@@ -98,7 +99,11 @@ export function filterBundle(bundle: ResearchBundle, f: ResearchFilters): Resear
   const sessions = bundle.sessions.filter((s) => {
     if (partId && s.participant_id !== partId) return false;
     if (f.taskId !== 'all' && s.task_id !== f.taskId) return false;
-    if (f.status !== 'all' && s.status !== f.status) return false;
+    if (f.sessionId !== 'all' && s.id !== f.sessionId) return false;
+    if (f.status === 'approved' && !bundle.assessments.some((a) => a.session_id === s.id && a.status === 'approved')) return false;
+    if (f.status === 'pending' && !bundle.assessments.some((a) => a.session_id === s.id && a.status === 'pending')) return false;
+    if (f.status === 'none' && bundle.assessments.some((a) => a.session_id === s.id)) return false;
+    if (f.status !== 'all' && f.status !== 'approved' && f.status !== 'pending' && f.status !== 'none' && s.status !== f.status) return false;
     return inRange(s.started_at);
   });
   const sessionIds = new Set(sessions.map((s) => s.id));
@@ -119,5 +124,5 @@ export function filterBundle(bundle: ResearchBundle, f: ResearchFilters): Resear
 }
 
 export function hasActiveFilters(f: ResearchFilters): boolean {
-  return f.participantId !== 'all' || f.taskId !== 'all' || f.status !== 'all' || f.from !== '' || f.to !== '';
+  return f.participantId !== 'all' || f.taskId !== 'all' || f.sessionId !== 'all' || f.status !== 'all' || f.from !== '' || f.to !== '';
 }

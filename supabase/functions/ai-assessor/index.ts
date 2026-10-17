@@ -97,12 +97,21 @@ Deno.serve(async (req: Request) => {
 
 You produce TWO independent assessments:
 
-## 1. Programming assessment (rubric-based mark out of 100)
+## 1. Programming assessment (100-mark rubric)
 Consider:
 - Correctness of the final code against the task's expected inputs/outputs and test cases
 - Code quality and clarity
 - Evidence of the learning objectives
-Assign a mark out of 100 (integer) and write constructive programming feedback (what works, what could improve, specific to the code). This feedback WILL be shown to the student after researcher approval.
+Assign marks using this rubric and write constructive programming feedback (what works, what could improve, specific to the code). This feedback WILL be shown to the student after researcher approval.
+
+RUBRIC (total 100):
+- correctness: 0-40 (code correctness against expected inputs/outputs and test cases)
+- approach: 0-20 (problem-solving approach: decomposition, algorithm choice, edge-case handling)
+- quality: 0-20 (code quality: clarity, naming, structure, readability)
+- testing: 0-20 (testing and debugging: runs recorded, errors investigated, test evidence)
+Total mark must equal correctness + approach + quality + testing.
+- mark: total (0-100)
+- feedback: text
 
 ## 2. Metacognitive assessment (qualitative ONLY, no scores, no comments)
 Rate FOUR dimensions, each exactly one of: excellent | good | needs_improvement | not_observed | not_applicable
@@ -120,7 +129,7 @@ CRITICAL RATING RULES:
 
 Respond with STRICT JSON only, no markdown fences:
 {
-  "programming": { "mark": <0-100 integer>, "feedback": "<programming feedback text>" },
+  "programming": { "mark": <0-100 integer>, "correctness": <0-40>, "approach": <0-20>, "quality": <0-20>, "testing": <0-20>, "feedback": "<programming feedback text>" },
   "metacognitive": {
     "planning": "<rating>",
     "monitoring_and_attempt": "<rating>",
@@ -137,7 +146,7 @@ In evidence_refs, list the identifiers of the records your ratings are based on.
       return new Response(
         JSON.stringify({
           placeholder: true,
-          programming: { mark: null, feedback: "[AI assessor placeholder — no API key configured. Generate suggestion when the AI service is connected, or enter the mark and ratings manually.]" },
+          programming: { mark: null, correctness: null, approach: null, quality: null, testing: null, feedback: "[AI assessor placeholder — no API key configured. Generate suggestion when the AI service is connected, or enter the mark and ratings manually.]" },
           metacognitive: { planning: null, monitoring_and_attempt: null, critical_scrutiny_of_ai: null, evaluation: null },
           evidence_refs: {},
         }),
@@ -199,13 +208,25 @@ In evidence_refs, list the identifiers of the records your ratings are based on.
       mark = Math.max(0, Math.min(100, prog.mark));
     }
 
+    const sub = (v: unknown, max: number): number | null =>
+      typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= max ? v : null;
+
+    // If sub-scores are present, derive the total from them for consistency.
+    const correctness = sub(prog.correctness, 40);
+    const approach = sub(prog.approach, 20);
+    const quality = sub(prog.quality, 20);
+    const testing = sub(prog.testing, 20);
+    if (correctness !== null && approach !== null && quality !== null && testing !== null) {
+      mark = correctness + approach + quality + testing;
+    }
+
     const rating = (v: unknown) =>
       typeof v === "string" && METACOG_RATINGS.includes(v) ? v : null;
 
     return new Response(
       JSON.stringify({
         placeholder: false,
-        programming: { mark, feedback: typeof prog.feedback === "string" ? prog.feedback : null },
+        programming: { mark, correctness, approach, quality, testing, feedback: typeof prog.feedback === "string" ? prog.feedback : null },
         metacognitive: {
           planning: rating(meta.planning),
           monitoring_and_attempt: rating(meta.monitoring_and_attempt),

@@ -37,6 +37,7 @@ export default function SessionAssessment() {
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [evidence, setEvidence] = useState<EvidenceBundle | null>(null);
   const [mark, setMark] = useState<string>('');
+  const [rubric, setRubric] = useState({ correctness: '', approach: '', quality: '', testing: '' });
   const [feedback, setFeedback] = useState('');
   const [ratings, setRatings] = useState<Record<string, MetacognitiveRating | null>>({ planning: null, monitoring: null, scrutiny: null, evaluation: null });
   const [loading, setLoading] = useState(true);
@@ -70,6 +71,12 @@ export default function SessionAssessment() {
       const a = assessmentData as Assessment;
       setAssessment(a);
       setMark(a.approved_mark !== null ? String(a.approved_mark) : a.ai_suggested_mark !== null ? String(a.ai_suggested_mark) : '');
+      setRubric({
+        correctness: String(a.approved_correctness ?? a.ai_suggested_correctness ?? ''),
+        approach: String(a.approved_approach ?? a.ai_suggested_approach ?? ''),
+        quality: String(a.approved_quality ?? a.ai_suggested_quality ?? ''),
+        testing: String(a.approved_testing ?? a.ai_suggested_testing ?? ''),
+      });
       setFeedback(a.programming_feedback ?? a.ai_programming_feedback ?? '');
       setRatings({
         planning: a.metacog_planning ?? a.ai_suggested_planning ?? null,
@@ -139,6 +146,14 @@ export default function SessionAssessment() {
         });
       }
       if (data.programming?.mark !== null && data.programming?.mark !== undefined) setMark(String(data.programming.mark));
+      if (data.programming) {
+        setRubric({
+          correctness: data.programming.correctness !== null && data.programming.correctness !== undefined ? String(data.programming.correctness) : '',
+          approach: data.programming.approach !== null && data.programming.approach !== undefined ? String(data.programming.approach) : '',
+          quality: data.programming.quality !== null && data.programming.quality !== undefined ? String(data.programming.quality) : '',
+          testing: data.programming.testing !== null && data.programming.testing !== undefined ? String(data.programming.testing) : '',
+        });
+      }
       if (data.programming?.feedback) setFeedback(data.programming.feedback);
       if (sessionId && session) {
         await supabase.from('assessments').upsert({
@@ -149,6 +164,10 @@ export default function SessionAssessment() {
           status: 'pending',
           ai_suggested_at: new Date().toISOString(),
           ai_suggested_mark: data.programming?.mark ?? null,
+          ai_suggested_correctness: data.programming?.correctness ?? null,
+          ai_suggested_approach: data.programming?.approach ?? null,
+          ai_suggested_quality: data.programming?.quality ?? null,
+          ai_suggested_testing: data.programming?.testing ?? null,
           ai_programming_feedback: data.programming?.feedback ?? null,
           ai_suggested_planning: data.metacognitive?.planning ?? null,
           ai_suggested_monitoring: data.metacognitive?.monitoring_and_attempt ?? null,
@@ -170,6 +189,18 @@ export default function SessionAssessment() {
     if (!sessionId || !session) return;
     const markNum = mark.trim() === '' ? null : Number(mark);
     if (markNum !== null && (!Number.isInteger(markNum) || markNum < 0 || markNum > 100)) { setError('Mark must be a whole number between 0 and 100.'); return; }
+    const rubricNums = {
+      correctness: rubric.correctness.trim() === '' ? null : Number(rubric.correctness),
+      approach: rubric.approach.trim() === '' ? null : Number(rubric.approach),
+      quality: rubric.quality.trim() === '' ? null : Number(rubric.quality),
+      testing: rubric.testing.trim() === '' ? null : Number(rubric.testing),
+    };
+    if (rubricNums.correctness !== null && (rubricNums.correctness < 0 || rubricNums.correctness > 40)) { setError('Code correctness must be between 0 and 40.'); return; }
+    if ([rubricNums.approach, rubricNums.quality, rubricNums.testing].some((v) => v !== null && (v < 0 || v > 20))) { setError('Approach, quality and testing sub-scores must be between 0 and 20.'); return; }
+    const rubricTotal = rubricNums.correctness !== null && rubricNums.approach !== null && rubricNums.quality !== null && rubricNums.testing !== null
+      ? rubricNums.correctness + rubricNums.approach + rubricNums.quality + rubricNums.testing
+      : null;
+    if (rubricTotal !== null && markNum !== null && rubricTotal !== markNum) { setError(`Rubric sub-scores total ${rubricTotal} but the mark is ${markNum}. They must match.`); return; }
     if (Object.values(ratings).some((r) => r === null)) { setError('Set all four metacognitive ratings before approving.'); return; }
     setSaving(true); setError('');
     const payload = {
@@ -179,6 +210,10 @@ export default function SessionAssessment() {
       participant_id: session.participant_id,
       status: 'approved' as const,
       approved_mark: markNum,
+      approved_correctness: rubricNums.correctness,
+      approved_approach: rubricNums.approach,
+      approved_quality: rubricNums.quality,
+      approved_testing: rubricNums.testing,
       programming_feedback: feedback.trim() || null,
       metacog_planning: ratings.planning,
       metacog_monitoring: ratings.monitoring,
@@ -253,6 +288,17 @@ export default function SessionAssessment() {
         <h2 className="font-semibold text-slate-900 mb-4 flex items-center gap-2"><FileCode className="w-4 h-4 text-slate-400" /> Programming assessment</h2>
         <label className="block text-sm font-medium text-slate-700 mb-1.5">Mark out of 100</label>
         <input type="number" min={0} max={100} value={mark} onChange={(e) => setMark(e.target.value)} className="w-32 border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="0–100" />
+        <div className="mt-3">
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">100-mark rubric breakdown</label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {([['correctness', 'Code correctness', 40], ['approach', 'Problem-solving approach', 20], ['quality', 'Code quality', 20], ['testing', 'Testing and debugging', 20]] as const).map(([key, label, max]) => (
+              <div key={key}>
+                <div className="text-xs text-slate-500 mb-1">{label} <span className="text-slate-400">/ {max}</span></div>
+                <input type="number" min={0} max={max} value={rubric[key]} onChange={(e) => setRubric((prev) => ({ ...prev, [key]: e.target.value }))} className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-sm" placeholder={`0–${max}`} />
+              </div>
+            ))}
+          </div>
+        </div>
         <label className="block text-sm font-medium text-slate-700 mt-4 mb-1.5">Programming feedback <span className="text-slate-400 font-normal">(shown to the student once approved)</span></label>
         <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={6} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="What works well in the solution and what could be improved..." />
       </div>
@@ -304,4 +350,4 @@ export default function SessionAssessment() {
 }
 
 interface EvidenceBundle { plans: Plan[]; attempts: CodeAttempt[]; snapshots: CodeSnapshot[]; aiInteractions: AIInteraction[]; scrutiny: ScrutinyResponse[]; reflection: Reflection | null; }
-interface AISuggestion { placeholder?: boolean; error?: string; programming?: { mark: number | null; feedback: string | null }; metacognitive?: { planning: MetacognitiveRating | null; monitoring_and_attempt: MetacognitiveRating | null; critical_scrutiny_of_ai: MetacognitiveRating | null; evaluation: MetacognitiveRating | null }; evidence_refs?: Record<string, unknown>; }
+interface AISuggestion { placeholder?: boolean; error?: string; programming?: { mark: number | null; correctness: number | null; approach: number | null; quality: number | null; testing: number | null; feedback: string | null }; metacognitive?: { planning: MetacognitiveRating | null; monitoring_and_attempt: MetacognitiveRating | null; critical_scrutiny_of_ai: MetacognitiveRating | null; evaluation: MetacognitiveRating | null }; evidence_refs?: Record<string, unknown>; }
