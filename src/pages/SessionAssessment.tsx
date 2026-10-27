@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Brain, Check, ClipboardCheck, FileCode, Lightbulb, Loader2, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Brain, Check, ClipboardCheck, FileCode, Lightbulb, Loader2, Save, Sparkles, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
@@ -33,9 +33,11 @@ const RATING_STYLES: Record<MetacognitiveRating, string> = {
 export default function SessionAssessment() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const { profile } = useAuth();
-  const [session, setSession] = useState<(Session & { task?: Task }) | null>(null);
+  const [session, setSession] = useState<(Session & { task?: Task; attempts?: { current_code: string; run_count: number; revision_count: number; last_error: string | null; last_output: string | null }[] }) | null>(null);
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [evidence, setEvidence] = useState<EvidenceBundle | null>(null);
+  const [finalCode, setFinalCode] = useState<string | null>(null);
+  const [initialCode, setInitialCode] = useState<string | null>(null);
   const [mark, setMark] = useState<string>('');
   const [rubric, setRubric] = useState({ correctness: '', approach: '', quality: '', testing: '' });
   const [feedback, setFeedback] = useState('');
@@ -56,11 +58,14 @@ export default function SessionAssessment() {
     setLoading(true);
     const { data: sessionData } = await supabase
       .from('sessions')
-      .select('*, task:tasks(*)')
+      .select('*, task:tasks(*), attempts:code_attempts(current_code, run_count, revision_count, last_error, last_output, updated_at)')
       .eq('id', sessionId)
       .maybeSingle();
     if (!sessionData) { setError('Session not found.'); setLoading(false); return; }
-    setSession(sessionData as Session & { task?: Task });
+    setSession(sessionData as Session & { task?: Task; attempts?: { current_code: string; run_count: number; revision_count: number; last_error: string | null; last_output: string | null }[] });
+    const snap = (sessionData as { attempts?: { current_code: string }[] }).attempts;
+    setFinalCode(snap && snap.length > 0 ? snap[snap.length - 1].current_code : null);
+    void loadInitialCode();
 
     const { data: assessmentData } = await supabase
       .from('assessments')
@@ -185,24 +190,71 @@ export default function SessionAssessment() {
     }
   }
 
-  async function approve() {
-    if (!sessionId || !session) return;
+  function parseRubricInput(): { error: string | null; markNum: number | null; rubricNums: { correctness: number | null; approach: number | null; quality: number | null; testing: number | null } } {
     const markNum = mark.trim() === '' ? null : Number(mark);
-    if (markNum !== null && (!Number.isInteger(markNum) || markNum < 0 || markNum > 100)) { setError('Mark must be a whole number between 0 and 100.'); return; }
+    if (markNum !== null && (!Number.isInteger(markNum) || markNum < 0 || markNum > 100)) return { error: 'Mark must be a whole number between 0 and 100.', markNum: null, rubricNums: { correctness: null, approach: null, quality: null, testing: null } };
     const rubricNums = {
       correctness: rubric.correctness.trim() === '' ? null : Number(rubric.correctness),
       approach: rubric.approach.trim() === '' ? null : Number(rubric.approach),
       quality: rubric.quality.trim() === '' ? null : Number(rubric.quality),
       testing: rubric.testing.trim() === '' ? null : Number(rubric.testing),
     };
-    if (rubricNums.correctness !== null && (rubricNums.correctness < 0 || rubricNums.correctness > 40)) { setError('Code correctness must be between 0 and 40.'); return; }
-    if ([rubricNums.approach, rubricNums.quality, rubricNums.testing].some((v) => v !== null && (v < 0 || v > 20))) { setError('Approach, quality and testing sub-scores must be between 0 and 20.'); return; }
+    if (rubricNums.correctness !== null && (!Number.isInteger(rubricNums.correctness) || rubricNums.correctness < 0 || rubricNums.correctness > 40)) return { error: 'Code correctness must be a whole number between 0 and 40.', markNum, rubricNums };
+    if ([rubricNums.approach, rubricNums.quality, rubricNums.testing].some((v) => v !== null && (!Number.isInteger(v) || v < 0 || v > 20))) return { error: 'Approach, quality and testing sub-scores must be whole numbers between 0 and 20.', markNum, rubricNums };
     const rubricTotal = rubricNums.correctness !== null && rubricNums.approach !== null && rubricNums.quality !== null && rubricNums.testing !== null
       ? rubricNums.correctness + rubricNums.approach + rubricNums.quality + rubricNums.testing
       : null;
-    if (rubricTotal !== null && markNum !== null && rubricTotal !== markNum) { setError(`Rubric sub-scores total ${rubricTotal} but the mark is ${markNum}. They must match.`); return; }
+    if (rubricTotal !== null && markNum !== null && rubricTotal !== markNum) return { error: `Rubric sub-scores total ${rubricTotal} but the mark is ${markNum}. They must match.`, markNum, rubricNums };
+    return { error: null, markNum, rubricNums };
+  }
+
+  function loadInitialCode() {
+    if (!sessionId) return;
+    void (async () => {
+      const { data } = await supabase.from('code_snapshots').select('code').eq('session_id', sessionId).order('created_at', { ascending: true }).limit(1);
+      setInitialCode(data && data.length > 0 ? (data[0] as { code: string }).code : null);
+    })();
+  }
+
+  async function saveDraft() {
+    if (!sessionId || !session) return;
+    const parsed = parseRubricInput();
+    if (parsed.error) { setError(parsed.error); return; }
+    setSaving(true); setError('');
+    const payload = {
+      session_id: sessionId,
+      task_id: session.task_id,
+      student_id: session.student_id,
+      participant_id: session.participant_id,
+      status: 'pending' as const,
+      approved_mark: parsed.markNum,
+      approved_correctness: parsed.rubricNums.correctness,
+      approved_approach: parsed.rubricNums.approach,
+      approved_quality: parsed.rubricNums.quality,
+      approved_testing: parsed.rubricNums.testing,
+      programming_feedback: feedback.trim() || null,
+      metacog_planning: ratings.planning,
+      metacog_monitoring: ratings.monitoring,
+      metacog_scrutiny: ratings.scrutiny,
+      metacog_evaluation: ratings.evaluation,
+    };
+    const { error: upsertError } = await supabase.from('assessments').upsert(payload, { onConflict: 'session_id' });
+    if (upsertError) { setError('Failed to save the draft. Please try again.'); setSaving(false); return; }
+    void logEvent({ sessionId, taskId: session.task_id, participantId: session.participant_id, phase: 'completed', eventType: 'PHASE_ENTERED', description: 'Researcher saved a private assessment draft (not visible to student).', metadata: {} });
+    setSaving(false);
+    setNotice('Draft saved privately. The student sees nothing until you approve and publish.');
+    await load();
+  }
+
+  async function approve() {
+    if (!sessionId || !session) return;
+    const parsed = parseRubricInput();
+    if (parsed.error) { setError(parsed.error); return; }
+    const { markNum, rubricNums } = parsed;
+    if (markNum === null) { setError('Enter a mark out of 100 before approving.'); return; }
     if (Object.values(ratings).some((r) => r === null)) { setError('Set all four metacognitive ratings before approving.'); return; }
     setSaving(true); setError('');
+    const wasApproved = assessment?.status === 'approved';
     const payload = {
       session_id: sessionId,
       task_id: session.task_id,
@@ -224,10 +276,26 @@ export default function SessionAssessment() {
     };
     const { error: upsertError } = await supabase.from('assessments').upsert(payload, { onConflict: 'session_id' });
     if (upsertError) { setError('Failed to save the assessment. Please try again.'); setSaving(false); return; }
-    void logEvent({ sessionId, taskId: session.task_id, participantId: session.participant_id, phase: 'completed', eventType: 'PHASE_EXITED', description: 'Researcher approved the assessment and published it to the student.', metadata: {} });
+    if (wasApproved) {
+      const { error: auditError } = await supabase.from('assessment_audit').insert({
+        assessment_id: assessment!.id,
+        changed_by: profile?.id ?? null,
+        change_kind: 'correction',
+        previous_mark: assessment!.approved_mark,
+        previous_status: assessment!.status,
+        new_mark: markNum,
+        new_status: 'approved',
+        previous_feedback: assessment!.programming_feedback,
+        new_feedback: feedback.trim() || null,
+        previous_rubric: { correctness: assessment!.approved_correctness, approach: assessment!.approved_approach, quality: assessment!.approved_quality, testing: assessment!.approved_testing },
+        new_rubric: rubricNums,
+      });
+      if (auditError) { setError('Grade published, but recording the audit entry failed. Please check the assessment record.'); setSaving(false); return; }
+    }
+    void logEvent({ sessionId, taskId: session.task_id, participantId: session.participant_id, phase: 'completed', eventType: 'PHASE_EXITED', description: wasApproved ? 'Researcher corrected an approved assessment; audit entry recorded.' : 'Researcher approved the assessment and published it to the student.', metadata: {} });
     await load();
     setSaving(false);
-    setNotice('Approved. The student can now see their mark, feedback and ratings.');
+    setNotice(wasApproved ? 'Correction published. The audit trail has been updated.' : 'Approved. The student can now see their mark, feedback and ratings.');
   }
 
   if (loading) return <div className="max-w-4xl mx-auto px-4 py-8 text-slate-400 text-sm">Loading session...</div>;
@@ -237,11 +305,11 @@ export default function SessionAssessment() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6">
-      <Link to={`/researcher/session/${sessionId}`} className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900 mb-4"><ArrowLeft className="w-4 h-4" /> Back to session timeline</Link>
+      <Link to="/researcher" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900 mb-4"><ArrowLeft className="w-4 h-4" /> Back to Assignment Grading</Link>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div>
-          <p className="text-xs font-semibold text-amber-600 uppercase tracking-widest">Assessment &amp; feedback</p>
-          <h1 className="text-2xl font-bold text-slate-900 mt-1">{session.task?.title ?? 'Task'}</h1>
+          <p className="text-xs font-semibold text-amber-600 uppercase tracking-widest">Assignment Grading</p>
+          <h1 className="text-2xl font-bold text-navy-900 mt-1">{session.task?.title ?? 'Task'}</h1>
           <p className="text-sm text-slate-500 mt-1">Participant <span className="font-mono">{session.participant_id}</span> · nothing is published until you approve.</p>
         </div>
         <span className={`px-2.5 py-1 rounded-full text-xs font-medium border shrink-0 ${approved ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>{approved ? 'Approved — visible to student' : 'Draft — not yet approved'}</span>
@@ -285,7 +353,33 @@ export default function SessionAssessment() {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
-        <h2 className="font-semibold text-slate-900 mb-4 flex items-center gap-2"><FileCode className="w-4 h-4 text-slate-400" /> Programming assessment</h2>
+        <h2 className="font-semibold text-navy-900 mb-4 flex items-center gap-2"><FileCode className="w-4 h-4 text-slate-400" /> Submitted work</h2>
+        <div className="grid sm:grid-cols-3 gap-3 text-sm mb-4">
+          <div className="bg-slate-50 rounded-lg p-3"><div className="text-xs text-slate-500">Programming language</div><div className="font-semibold text-navy-900 mt-0.5">{session.task?.language ?? '—'}</div></div>
+          <div className="bg-slate-50 rounded-lg p-3"><div className="text-xs text-slate-500">Code runs</div><div className="font-semibold text-navy-900 mt-0.5">{session.attempts?.[0]?.run_count ?? '—'}</div></div>
+          <div className="bg-slate-50 rounded-lg p-3"><div className="text-xs text-slate-500">Revisions saved</div><div className="font-semibold text-navy-900 mt-0.5">{session.attempts?.[0]?.revision_count ?? '—'}</div></div>
+        </div>
+        <div className="grid lg:grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs font-medium text-slate-500 mb-1.5">Original attempt (first saved code)</div>
+            <pre className="h-56 overflow-auto bg-slate-950 text-slate-100 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap">{initialCode || 'No initial code recorded.'}</pre>
+          </div>
+          <div>
+            <div className="text-xs font-medium text-slate-500 mb-1.5">Final submitted code</div>
+            <pre className="h-56 overflow-auto bg-slate-950 text-slate-100 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap">{finalCode || 'No code recorded.'}</pre>
+          </div>
+        </div>
+        {(session.attempts?.[0]?.last_output || session.attempts?.[0]?.last_error) && (
+          <div className="mt-4">
+            <div className="text-xs font-medium text-slate-500 mb-1.5">Latest execution result</div>
+            <pre className={`max-h-40 overflow-auto rounded-lg p-3 text-xs font-mono whitespace-pre-wrap ${session.attempts[0].last_error ? 'bg-red-950 text-red-200' : 'bg-slate-900 text-emerald-300'}`}>{session.attempts[0].last_error || session.attempts[0].last_output}</pre>
+          </div>
+        )}
+        <div className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500">Task requirements: <span className="text-slate-700">{session.task?.problem_description?.slice(0, 300)}{(session.task?.problem_description?.length ?? 0) > 300 ? '…' : ''}</span></div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
+        <h2 className="font-semibold text-navy-900 mb-4 flex items-center gap-2"><FileCode className="w-4 h-4 text-slate-400" /> Programming assessment</h2>
         <label className="block text-sm font-medium text-slate-700 mb-1.5">Mark out of 100</label>
         <input type="number" min={0} max={100} value={mark} onChange={(e) => setMark(e.target.value)} className="w-32 border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="0–100" />
         <div className="mt-3">
@@ -338,12 +432,20 @@ export default function SessionAssessment() {
       )}
 
       <div className="flex flex-wrap items-center gap-3">
+        {!approved && (
+          <button onClick={() => void saveDraft()} disabled={saving} className="flex items-center gap-2 border border-slate-300 text-slate-700 text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-slate-50 disabled:opacity-50">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Draft
+          </button>
+        )}
         <button onClick={() => void approve()} disabled={saving} className="flex items-center gap-2 bg-emerald-600 text-white text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          {approved ? 'Update published assessment' : 'Approve & publish to student'}
+          {approved ? 'Update published assessment' : 'Approve & Publish'}
         </button>
         <button onClick={() => void load()} disabled={saving || generating} className="flex items-center gap-2 border border-slate-300 text-slate-600 text-sm px-4 py-2.5 rounded-lg hover:bg-slate-50 disabled:opacity-50"><X className="w-4 h-4" /> Discard changes</button>
         {!approved && <span className="flex items-center gap-1.5 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5" /> The student sees nothing until you approve.</span>}
+        {approved && assessment?.approved_at && (
+          <span className="text-xs text-slate-400">Approved {new Date(assessment.approved_at).toLocaleString()}{assessment.approved_by ? ' · by ' + assessment.approved_by.slice(0, 8) : ''}</span>
+        )}
       </div>
     </div>
   );

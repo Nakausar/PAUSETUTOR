@@ -1,446 +1,242 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import {
-  AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Download,
-  Filter, Layers, ListChecks, RefreshCw, Search, ShieldCheck, X,
-} from 'lucide-react';
-import { loadResearchData, filterBundle, hasActiveFilters, EMPTY_FILTERS, type ResearchBundle, type ResearchFilters } from '@/lib/researchData';
-import { findIndicator } from '@/lib/researchIndicators';
-import { RESEARCH_QUESTIONS, dataQuality, sessionIndicatorRows } from '@/lib/researchQuestions';
-import { CardHeader, EmptyChart } from '@/components/charts';
-import { buildSessionTrace, rqDataset } from '@/lib/researchTraces';
-import { exportAsCSV } from '@/lib/exporter';
-import type { Assessment } from '@/lib/types';
+import { CheckCircle2, ClipboardCheck, Clock, FileCode, RefreshCw, Search } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
+import type { Assessment, Session, Task, TaskAssignment } from '@/lib/types';
 
-const TABS = [
-  { key: 'overview', label: 'Overview', icon: ClipboardCheck },
-  { key: 'review', label: 'Assessment Review', icon: ClipboardCheck },
-  { key: 'traces', label: 'Participant Learning Traces', icon: Layers },
-  { key: 'rq', label: 'Research Question Explorer', icon: Search },
-  { key: 'quality', label: 'Data Quality & Exports', icon: ShieldCheck },
-] as const;
-type TabKey = (typeof TABS)[number]['key'];
+type RowStatus = 'not_submitted' | 'submitted' | 'ai_draft' | 'under_review' | 'approved';
+
+const STATUS_META: Record<RowStatus, { label: string; className: string }> = {
+  not_submitted: { label: 'Not submitted', className: 'bg-slate-100 text-slate-500' },
+  submitted: { label: 'Submitted', className: 'bg-blue-50 text-blue-700' },
+  ai_draft: { label: 'AI draft available', className: 'bg-violet-50 text-violet-700' },
+  under_review: { label: 'Under review', className: 'bg-amber-50 text-amber-700' },
+  approved: { label: 'Approved', className: 'bg-emerald-50 text-emerald-700' },
+};
+
+const STATUS_ORDER: Record<RowStatus, number> = { under_review: 0, ai_draft: 1, submitted: 2, approved: 3, not_submitted: 4 };
+
+interface GradeRow {
+  key: string;
+  studentId: string;
+  participantId: string;
+  taskId: string;
+  assignment: string;
+  submittedAt: string | null;
+  sessionId: string | null;
+  status: RowStatus;
+  correctness: number | null;
+  approach: number | null;
+  quality: number | null;
+  testing: number | null;
+  total: number | null;
+}
+
+type SortKey = 'participantId' | 'assignment' | 'submittedAt' | 'status' | 'total';
 
 export default function ResearcherDashboard() {
-  const [bundle, setBundle] = useState<ResearchBundle | null>(null);
+  const [rows, setRows] = useState<GradeRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<TabKey>('overview');
-  const [filters, setFilters] = useState<ResearchFilters>(EMPTY_FILTERS);
+  const [search, setSearch] = useState('');
+  const [filterTask, setFilterTask] = useState('all');
+  const [filterStudent, setFilterStudent] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterFrom, setFilterFrom] = useState('');
+  const [filterTo, setFilterTo] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('status');
+  const [sortAsc, setSortAsc] = useState(true);
 
   useEffect(() => { void reload(); }, []);
   async function reload() {
     setLoading(true);
-    setBundle(await loadResearchData());
+    const [assignments, students, sessions, assessments] = await Promise.all([
+      supabase.from('task_assignments').select('*, task:tasks(id, title)').order('assigned_at', { ascending: false }),
+      supabase.from('profiles').select('id, participant_id').eq('role', 'student'),
+      supabase.from('sessions').select('*').order('started_at', { ascending: false }),
+      supabase.from('assessments').select('*'),
+    ]);
+
+    const studentMap = new Map<string, string>();
+    (students.data ?? []).forEach((s) => studentMap.set(s.id, s.participant_id));
+    const sessionMap = new Map<string, Session>();
+    (sessions.data ?? []).forEach((s) => {
+      const key = `${(s as Session).student_id}:${(s as Session).task_id}`;
+      if (!sessionMap.has(key)) sessionMap.set(key, s as Session);
+    });
+    const assessmentMap = new Map<string, Assessment>();
+    (assessments.data ?? []).forEach((a) => assessmentMap.set((a as Assessment).session_id, a as Assessment));
+
+    const built: GradeRow[] = ((assignments.data ?? []) as (TaskAssignment & { task?: Pick<Task, 'id' | 'title'> })[]).map((a) => {
+      const session = sessionMap.get(`${a.student_id}:${a.task_id}`) ?? null;
+      const assessment = session ? assessmentMap.get(session.id) ?? null : null;
+      let status: RowStatus = 'not_submitted';
+      if (session && assessment) {
+        if (assessment.status === 'approved') status = 'approved';
+        else if (assessment.approved_mark !== null || assessment.approved_correctness !== null || assessment.approved_approach !== null || assessment.approved_quality !== null || assessment.approved_testing !== null) status = 'under_review';
+        else if (assessment.ai_suggested_at) status = 'ai_draft';
+        else status = 'submitted';
+      } else if (session) {
+        status = 'submitted';
+      }
+      const parts = assessment ? [assessment.approved_correctness, assessment.approved_approach, assessment.approved_quality, assessment.approved_testing] : [null, null, null, null];
+      const total = parts.every((p) => p !== null) ? (parts as number[]).reduce((s, v) => s + v, 0) : null;
+      return {
+        key: `${a.student_id}:${a.task_id}`,
+        studentId: a.student_id,
+        participantId: studentMap.get(a.student_id) ?? a.student_id,
+        taskId: a.task_id,
+        assignment: a.task?.title ?? 'Task',
+        submittedAt: session?.started_at ?? null,
+        sessionId: session?.id ?? null,
+        status,
+        correctness: assessment?.approved_correctness ?? null,
+        approach: assessment?.approved_approach ?? null,
+        quality: assessment?.approved_quality ?? null,
+        testing: assessment?.approved_testing ?? null,
+        total: assessment?.status === 'approved' ? assessment.approved_mark ?? total : total,
+      };
+    });
+    setRows(built);
     setLoading(false);
   }
 
-  const filtered = useMemo(() => (bundle ? filterBundle(bundle, filters) : null), [bundle, filters]);
+  const tasks = useMemo(() => Array.from(new Map(rows.map((r) => [r.taskId, r.assignment])).entries()), [rows]);
+  const students = useMemo(() => Array.from(new Map(rows.map((r) => [r.studentId, r.participantId])).entries()), [rows]);
 
-  if (loading || !bundle || !filtered) {
-    return <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6"><div className="text-slate-400 text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Loading research data...</div></div>;
+  const filtered = useMemo(() => rows.filter((r) => {
+    if (filterTask !== 'all' && r.taskId !== filterTask) return false;
+    if (filterStudent !== 'all' && r.studentId !== filterStudent) return false;
+    if (filterStatus !== 'all' && r.status !== filterStatus) return false;
+    if (filterFrom && (!r.submittedAt || r.submittedAt.slice(0, 10) < filterFrom)) return false;
+    if (filterTo && (!r.submittedAt || r.submittedAt.slice(0, 10) > filterTo)) return false;
+    const q = search.trim().toLowerCase();
+    if (q && !r.participantId.toLowerCase().includes(q) && !r.assignment.toLowerCase().includes(q)) return false;
+    return true;
+  }), [rows, search, filterTask, filterStudent, filterStatus, filterFrom, filterTo]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'status') cmp = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+      else if (sortKey === 'submittedAt') cmp = (a.submittedAt ?? '').localeCompare(b.submittedAt ?? '');
+      else if (sortKey === 'total') cmp = (a.total ?? -1) - (b.total ?? -1);
+      else cmp = String(a[sortKey]).localeCompare(String(b[sortKey]));
+      return sortAsc ? cmp : -cmp;
+    });
+    return arr;
+  }, [filtered, sortKey, sortAsc]);
+
+  const totalSubmissions = rows.filter((r) => r.sessionId).length;
+  const pendingGrading = rows.filter((r) => r.status === 'submitted' || r.status === 'ai_draft' || r.status === 'under_review').length;
+  const graded = rows.filter((r) => r.status === 'approved').length;
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(true); }
   }
+  const sortIndicator = (key: SortKey) => (sortKey === key ? (sortAsc ? ' ▲' : ' ▼') : '');
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <p className="text-xs font-semibold text-amber-600 uppercase tracking-widest">Research platform</p>
-          <h1 className="text-2xl font-bold text-slate-900 mt-1">PAUSE AI Tutor</h1>
-          <p className="text-sm text-slate-500 mt-1">Assignment grading, feedback and research data — learning analytics visualisations have been removed from the dashboards.</p>
-        </div>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-navy-900">Assignment Grading</h1>
         <button onClick={() => void reload()} className="flex items-center gap-1.5 text-sm border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50"><RefreshCw className="w-4 h-4" /> Refresh</button>
       </div>
 
-      <ResearchFiltersBar bundle={bundle} filters={filters} setFilters={setFilters} />
-
-      <div className="flex gap-1 overflow-x-auto border-b border-slate-200 mb-5" role="tablist">
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} role="tab" aria-selected={active} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${active ? 'border-amber-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-900'}`}>
-              <Icon className="w-4 h-4" /> {t.label}
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-500"><FileCode className="w-4 h-4 text-blue-600" /> Total submissions</div>
+          <div className="text-3xl font-bold text-navy-900 mt-1">{totalSubmissions}</div>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-500"><Clock className="w-4 h-4 text-amber-600" /> Pending grading</div>
+          <div className="text-3xl font-bold text-navy-900 mt-1">{pendingGrading}</div>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-500"><CheckCircle2 className="w-4 h-4 text-emerald-600" /> Graded submissions</div>
+          <div className="text-3xl font-bold text-navy-900 mt-1">{graded}</div>
+        </div>
       </div>
 
-      {tab === 'overview' && <OverviewTab bundle={filtered} />}
-      {tab === 'review' && <AssessmentReviewTab bundle={filtered} />}
-      {tab === 'traces' && <TracesTab bundle={filtered} />}
-      {tab === 'rq' && <RQExplorerTab bundle={filtered} />}
-      {tab === 'quality' && <QualityExportsTab bundle={filtered} />}
-    </div>
-  );
-}
-
-/* ------------------------- Filters ------------------------- */
-
-function ResearchFiltersBar({ bundle, filters, setFilters }: { bundle: ResearchBundle; filters: ResearchFilters; setFilters: (f: ResearchFilters) => void }) {
-  const set = (patch: Partial<ResearchFilters>) => setFilters({ ...filters, ...patch });
-  const active = hasActiveFilters(filters);
-  return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
-      <div className="flex items-center gap-2 mb-3"><Filter className="w-4 h-4 text-slate-400" /><span className="text-sm font-semibold text-slate-900">Research filters</span>{active && <span className="text-[11px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">active</span>}</div>
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-        <label className="text-xs text-slate-500">Participant
-          <select value={filters.participantId} onChange={(e) => set({ participantId: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
-            <option value="all">All</option>
-            {bundle.participants.map((p) => <option key={p.id} value={p.id}>{p.participant_id}</option>)}
-          </select>
-        </label>
-        <label className="text-xs text-slate-500">Task
-          <select value={filters.taskId} onChange={(e) => set({ taskId: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
-            <option value="all">All</option>
-            {bundle.tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
-          </select>
-        </label>
-        <label className="text-xs text-slate-500">Session
-          <select value={filters.sessionId} onChange={(e) => set({ sessionId: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
-            <option value="all">All</option>
-            {bundle.sessions.map((s) => <option key={s.id} value={s.id}>{`${s.participant_id} · ${(s.task_title ?? 'Task').slice(0, 18)}`}</option>)}
-          </select>
-        </label>
-        <label className="text-xs text-slate-500">From
-          <input type="date" value={filters.from} onChange={(e) => set({ from: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-        </label>
-        <label className="text-xs text-slate-500">To
-          <input type="date" value={filters.to} onChange={(e) => set({ to: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-        </label>
-        <label className="text-xs text-slate-500">Assessment status
-          <select value={filters.status} onChange={(e) => set({ status: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
-            <option value="all">All</option>
-            <option value="approved">Approved assessments</option>
-            <option value="pending">Pending assessments</option>
-            <option value="none">No assessment</option>
-          </select>
-        </label>
-      </div>
-      <p className="text-[11px] text-slate-400 mt-2">No study-group field exists in the database; group assignment would require a schema addition before this filter can be offered.</p>
-      {active && <button onClick={() => setFilters(EMPTY_FILTERS)} className="mt-2 text-xs text-slate-500 hover:text-slate-900 underline">Clear all filters</button>}
-    </div>
-  );
-}
-
-/* ------------------------- Tab 1: Simple overview + grading ------------------------- */
-
-function StatTile({ label, value, accent = false }: { label: string; value: string | number; accent?: boolean }) {
-  return (
-    <div className={`bg-white rounded-xl border p-5 ${accent ? 'border-blue-200' : 'border-slate-200'}`}>
-      <div className={`text-sm font-medium ${accent ? 'text-blue-700' : 'text-slate-500'}`}>{label}</div>
-      <div className="text-3xl font-bold text-slate-900 mt-1">{value}</div>
-    </div>
-  );
-}
-
-function OverviewTab({ bundle }: { bundle: ResearchBundle }) {
-  const students = bundle.participants.length;
-  const sessions = bundle.sessions.length;
-  const completed = bundle.sessions.filter((s) => s.status === 'completed').length;
-  const approved = bundle.assessments.filter((a) => a.status === 'approved' && a.approved_mark !== null);
-  const pending = bundle.assessments.filter((a) => a.status === 'pending');
-  const avgApproved = approved.length ? Math.round(approved.reduce((s, a) => s + (a.approved_mark ?? 0), 0) / approved.length) : null;
-
-  const rows = bundle.assessments
-    .map((a) => ({ a, session: bundle.sessions.find((s) => s.id === a.session_id) }))
-    .sort((x, y) => (x.a.status === y.a.status ? (y.a.updated_at ?? '').localeCompare(x.a.updated_at ?? '') : x.a.status === 'pending' ? -1 : 1));
-
-  return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <StatTile label="Total students" value={students} />
-        <StatTile label="Total assigned tasks" value={sessions} accent />
-        <StatTile label="Completed submissions" value={completed} />
-        <StatTile label="Awaiting grading" value={pending.length} />
-        <StatTile label="Average approved grade" value={avgApproved !== null ? `${avgApproved}/100` : '—'} />
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+          <label className="text-xs text-slate-500 md:col-span-2">Search
+            <div className="relative mt-1">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Student or assignment..." className="w-full border border-slate-300 rounded-lg pl-8 pr-2 py-1.5 text-sm" />
+            </div>
+          </label>
+          <label className="text-xs text-slate-500">Assignment
+            <select value={filterTask} onChange={(e) => setFilterTask(e.target.value)} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
+              <option value="all">All</option>
+              {tasks.map(([id, title]) => <option key={id} value={id}>{title}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-slate-500">Student
+            <select value={filterStudent} onChange={(e) => setFilterStudent(e.target.value)} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
+              <option value="all">All</option>
+              {students.map(([id, pid]) => <option key={id} value={id}>{pid}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-slate-500">Grading status
+            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
+              <option value="all">All</option>
+              {(Object.keys(STATUS_META) as RowStatus[]).map((s) => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-slate-500">Submitted between
+            <div className="flex gap-1.5 mt-1">
+              <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} className="w-full border border-slate-300 rounded-lg px-1.5 py-1.5 text-xs" />
+              <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} className="w-full border border-slate-300 rounded-lg px-1.5 py-1.5 text-xs" />
+            </div>
+          </label>
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="Assignment grading and feedback" subtitle="AI drafts, researcher sub-scores (correctness 40 / approach 20 / quality 20 / testing 20), approval state and timestamps. Unapproved rows are never visible to students." />
-        {rows.length === 0 ? <EmptyChart message="No assessments in scope." /> : (
+        {loading ? <div className="text-slate-400 text-sm">Loading submissions...</div> : sorted.length === 0 ? (
+          <div className="text-slate-400 text-sm text-center py-8">No submissions match the current filters.</div>
+        ) : (
           <div className="overflow-x-auto">
             <table className="text-xs w-full">
               <thead className="text-slate-500"><tr className="text-left">
-                {['participant', 'task', 'state', 'AI draft', 'rubric (C/A/Q/T)', 'approved', 'rubric total', 'approved at', ''].map((h) => <th key={h} className="py-2 px-2 border-b border-slate-100 font-medium whitespace-nowrap">{h}</th>)}
+                <th className="py-2 px-2 border-b border-slate-100 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('participantId')}>Student ID{sortIndicator('participantId')}</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('assignment')}>Assignment{sortIndicator('assignment')}</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('submittedAt')}>Submitted{sortIndicator('submittedAt')}</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium cursor-pointer whitespace-nowrap" onClick={() => toggleSort('status')}>Status{sortIndicator('status')}</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium text-right">Correctness /40</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium text-right">Approach /20</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium text-right">Quality /20</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium text-right">Testing /20</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium cursor-pointer text-right whitespace-nowrap" onClick={() => toggleSort('total')}>Total /100{sortIndicator('total')}</th>
+                <th className="py-2 px-2 border-b border-slate-100 font-medium">Action</th>
               </tr></thead>
               <tbody>
-                {rows.map(({ a, session }) => (
-                  <tr key={a.id} className="text-slate-700">
-                    <td className="py-2 px-2 font-mono">{a.participant_id}</td>
-                    <td className="py-2 px-2 max-w-40 truncate">{session?.task_title ?? 'Task'}</td>
-                    <td className="py-2 px-2"><span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${a.status === 'approved' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{a.status}</span></td>
-                    <td className="py-2 px-2">{a.ai_suggested_mark ?? '—'}</td>
-                    <td className="py-2 px-2 font-mono">{[a.approved_correctness, a.approved_approach, a.approved_quality, a.approved_testing].map((v) => v ?? '–').join('/')}</td>
-                    <td className="py-2 px-2 font-bold">{a.approved_mark ?? '—'}</td>
-                    <td className="py-2 px-2">{rubricTotals(a) ?? '—'}</td>
-                    <td className="py-2 px-2 text-slate-400">{a.approved_at ? new Date(a.approved_at).toLocaleString() : '—'}</td>
-                    <td className="py-2 px-2"><Link to={`/researcher/session/${a.session_id}/assessment`} className="text-blue-600 hover:text-blue-800 underline">review</Link></td>
+                {sorted.map((r) => (
+                  <tr key={r.key} className="text-slate-700 hover:bg-slate-50/60">
+                    <td className="py-2 px-2 font-mono">{r.participantId}</td>
+                    <td className="py-2 px-2 max-w-44 truncate" title={r.assignment}>{r.assignment}</td>
+                    <td className="py-2 px-2 whitespace-nowrap">{r.submittedAt ? new Date(r.submittedAt).toLocaleDateString() : '—'}</td>
+                    <td className="py-2 px-2"><span className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${STATUS_META[r.status].className}`}>{STATUS_META[r.status].label}</span></td>
+                    <td className="py-2 px-2 text-right font-mono">{r.correctness ?? '—'}</td>
+                    <td className="py-2 px-2 text-right font-mono">{r.approach ?? '—'}</td>
+                    <td className="py-2 px-2 text-right font-mono">{r.quality ?? '—'}</td>
+                    <td className="py-2 px-2 text-right font-mono">{r.testing ?? '—'}</td>
+                    <td className="py-2 px-2 text-right font-bold">{r.total ?? '—'}</td>
+                    <td className="py-2 px-2">
+                      {r.sessionId ? (
+                        <Link to={`/researcher/session/${r.sessionId}/assessment`} className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 underline whitespace-nowrap"><ClipboardCheck className="w-3.5 h-3.5" /> Grade</Link>
+                      ) : <span className="text-slate-300">—</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </div>
-      <p className="text-[11px] text-slate-400">AI suggestion drafts, researcher-approved values and approval timestamps are stored as separate columns, so the record of what the AI proposed and what the researcher published is always preserved.</p>
-    </div>
-  );
-}
-
-function rubricTotals(a: Assessment): number | null {
-  const parts = [a.approved_correctness, a.approved_approach, a.approved_quality, a.approved_testing];
-  return parts.every((p) => p !== null) ? parts.reduce((s, v) => s + (v ?? 0), 0) : null;
-}
-
-/* ------------------------- Tab 2: Assessment Review ------------------------- */
-
-function AssessmentReviewTab({ bundle }: { bundle: ResearchBundle }) {
-  const rows = bundle.assessments
-    .map((a) => ({ a, session: bundle.sessions.find((s) => s.id === a.session_id) }))
-    .sort((x, y) => (x.a.status === y.a.status ? (y.a.updated_at ?? '').localeCompare(x.a.updated_at ?? '') : x.a.status === 'pending' ? -1 : 1));
-  return (
-    <div className="space-y-5">
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="Assessment records" subtitle="AI drafts, researcher sub-scores (correctness 40 / approach 20 / quality 20 / testing 20), approval state and timestamps. Unapproved rows are never visible to students." />
-        {rows.length === 0 ? <EmptyChart message="No assessments in scope." /> : (
-          <div className="overflow-x-auto">
-            <table className="text-xs w-full">
-              <thead className="text-slate-500"><tr className="text-left">
-                {['participant', 'task', 'state', 'AI draft', 'rubric (C/A/Q/T)', 'approved', 'rubric total', 'approved at', ''].map((h) => <th key={h} className="py-2 px-2 border-b border-slate-100 font-medium whitespace-nowrap">{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {rows.map(({ a, session }) => (
-                  <tr key={a.id} className="text-slate-700">
-                    <td className="py-2 px-2 font-mono">{a.participant_id}</td>
-                    <td className="py-2 px-2 max-w-40 truncate">{session?.task_title ?? 'Task'}</td>
-                    <td className="py-2 px-2"><span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${a.status === 'approved' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{a.status}</span></td>
-                    <td className="py-2 px-2">{a.ai_suggested_mark ?? '—'}</td>
-                    <td className="py-2 px-2 font-mono">{[a.approved_correctness, a.approved_approach, a.approved_quality, a.approved_testing].map((v) => v ?? '–').join('/')}</td>
-                    <td className="py-2 px-2 font-bold">{a.approved_mark ?? '—'}</td>
-                    <td className="py-2 px-2">{rubricTotals(a) ?? '—'}</td>
-                    <td className="py-2 px-2 text-slate-400">{a.approved_at ? new Date(a.approved_at).toLocaleString() : '—'}</td>
-                    <td className="py-2 px-2"><Link to={`/researcher/session/${a.session_id}/assessment`} className="text-slate-500 hover:text-slate-900 underline">review</Link></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      <p className="text-[11px] text-slate-400">AI suggestion drafts, researcher-approved values and approval timestamps are stored as separate columns, so the record of what the AI proposed and what the researcher published is always preserved.</p>
-    </div>
-  );
-}
-
-/* ------------------------- Tab 3: Traces ------------------------- */
-
-function TracesTab({ bundle }: { bundle: ResearchBundle }) {
-  const [selected, setSelected] = useState<string | null>(bundle.sessions[0]?.id ?? null);
-  const trace = useMemo(() => (selected ? buildSessionTrace(bundle, selected) : null), [bundle, selected]);
-  const indicatorRows = useMemo(() => sessionIndicatorRows(bundle), [bundle]);
-
-  const kindStyles: Record<string, { label: string; color: string; bg: string }> = {
-    plan: { label: 'Plan', color: '#2563EB', bg: 'bg-blue-50 border-blue-200' },
-    initial_code: { label: 'Initial code', color: '#7C3AED', bg: 'bg-violet-50 border-violet-200' },
-    ai_request: { label: 'AI request', color: '#F59E0B', bg: 'bg-amber-50 border-amber-200' },
-    scrutiny: { label: 'Scrutiny', color: '#0D9488', bg: 'bg-teal-50 border-teal-200' },
-    revised_code: { label: 'Revised code', color: '#16A34A', bg: 'bg-green-50 border-green-200' },
-    final_outcome: { label: 'Final outcome', color: '#4F46E5', bg: 'bg-indigo-50 border-indigo-200' },
-    evaluation: { label: 'Evaluation', color: '#64748B', bg: 'bg-slate-50 border-slate-200' },
-  };
-
-  return (
-    <div className="space-y-5">
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="AI-to-Code Traceability viewer" subtitle="Plans, code snapshots, AI interactions, scrutiny, revisions, evaluations and final outcomes connected in one chain" />
-        <div className="flex flex-wrap gap-2 mb-4">
-          {bundle.sessions.map((s) => (
-            <button key={s.id} onClick={() => setSelected(s.id)}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${selected === s.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}>
-              <span className="font-mono">{s.participant_id}</span> · {s.task_title?.slice(0, 18)}
-            </button>
-          ))}
-        </div>
-        {!trace ? <EmptyChart message="No sessions in scope." /> : (
-          <div>
-            <div className="flex flex-wrap items-center gap-2 mb-4">
-              {trace.steps.map((s, i) => {
-                const style = kindStyles[s.kind];
-                return (
-                  <div key={i} className="flex items-center gap-2">
-                    <div className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium ${style.bg}`} style={{ color: style.color }}>{style.label}</div>
-                    {i < trace.steps.length - 1 && <ArrowRight className="w-3.5 h-3.5 text-slate-300" />}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {trace.steps.map((s, i) => {
-                const style = kindStyles[s.kind];
-                return (
-                  <div key={i} className={`border rounded-lg p-3 ${style.bg}`}>
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="text-xs font-semibold" style={{ color: style.color }}>{s.label}</span>
-                      <span className="text-[10px] text-slate-400 shrink-0">{new Date(s.ts).toLocaleString()}</span>
-                    </div>
-                    <p className="text-xs text-slate-600 leading-5 whitespace-pre-wrap font-mono">{s.detail}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="Per-session derived indicators" subtitle="One row per session" legend={
-          <button onClick={() => exportAsCSV(indicatorRows, 'pause_session_indicators')} className="flex items-center gap-1.5 text-xs border border-slate-300 px-2.5 py-1.5 rounded-lg hover:bg-slate-50"><Download className="w-3.5 h-3.5" /> Export CSV</button>
-        } />
-        {indicatorRows.length === 0 ? <EmptyChart message="No sessions in scope." /> : (
-          <div className="overflow-x-auto max-h-80 overflow-y-auto">
-            <table className="text-xs w-full">
-              <thead className="text-slate-500 sticky top-0 bg-white"><tr className="text-left">
-                {['participant', 'task', 'status', 'events', 'AI req', 'scrutiny', 'rubric mean', 'behaviour'].map((h) => <th key={h} className="py-2 px-2 border-b border-slate-100 font-medium">{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {indicatorRows.map((r) => (
-                  <tr key={r.session_id} className="text-slate-700">
-                    <td className="py-1.5 px-2 font-mono">{r.participant_id}</td>
-                    <td className="py-1.5 px-2 max-w-32 truncate">{r.task}</td>
-                    <td className="py-1.5 px-2 capitalize">{r.status.replace('_', ' ')}</td>
-                    <td className="py-1.5 px-2">{r.events}</td>
-                    <td className="py-1.5 px-2">{r.ai_requests}</td>
-                    <td className="py-1.5 px-2">{r.scrutiny_responses}</td>
-                    <td className="py-1.5 px-2">{r.scrutiny_quality_mean !== null ? r.scrutiny_quality_mean.toFixed(1) : '—'}</td>
-                    <td className="py-1.5 px-2">{r.behaviour_class || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <p className="text-[11px] text-slate-400 mt-3">Rubric: correctness 40, problem-solving approach 20, code quality 20, testing and debugging 20. Missing grades show as — and are never treated as zero. AI drafts are never published without your approval; only approved grades are visible to students.</p>
       </div>
     </div>
   );
 }
-
-/* ------------------------- Tab 4: RQ Explorer ------------------------- */
-
-function RQExplorerTab({ bundle }: { bundle: ResearchBundle }) {
-  return (
-    <div className="space-y-5">
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="Research Question Evidence Explorer" subtitle="Evidence matrix: which indicators can inform each research question" />
-        <div className="grid lg:grid-cols-2 gap-3">
-          {RESEARCH_QUESTIONS.map((q) => {
-            let rows: Record<string, unknown>[] = [];
-            try { rows = rqDataset(bundle, q.id); } catch { rows = []; }
-            return (
-              <div key={q.id} className="border border-slate-200 rounded-lg p-4">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded">{q.id}</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-slate-400">{rows.length} records</span>
-                    <button onClick={() => exportAsCSV(rows, `pause_rq_${q.id.toLowerCase()}`)} className="text-[11px] text-slate-500 hover:text-slate-900 underline">export</button>
-                  </div>
-                </div>
-                <h3 className="text-sm font-semibold text-slate-900">{q.title}</h3>
-                <p className="text-xs text-slate-600 leading-5 mt-1.5 italic">{q.question}</p>
-                <div className="mt-3">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-400 font-medium mb-1">Evidence indicators</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {q.indicators.map((iid) => {
-                      const doc = findIndicator(iid);
-                      return doc ? <span key={iid} className="text-[11px] bg-slate-50 border border-slate-200 rounded px-2 py-0.5 text-slate-600" title={`${doc.definition} — source: ${doc.source}`}>{doc.label}</span> : null;
-                    })}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <p className="text-[11px] text-slate-400 mt-4 flex gap-1.5"><ListChecks className="w-3.5 h-3.5 shrink-0 mt-px" />Mappings are descriptive — they identify which data can address each question, not findings. Correlations are never presented as causal evidence and no statistical significance is asserted.</p>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------- Tab 5: Data Quality & Exports ------------------------- */
-
-function QualityExportsTab({ bundle }: { bundle: ResearchBundle }) {
-  const quality = useMemo(() => dataQuality(bundle), [bundle]);
-  const checks: { label: string; n: number; detail: string; severity: 'ok' | 'warn' }[] = [
-    { label: 'Events with empty description or metadata', n: quality.eventIssues.length, detail: 'Still counted in engagement metrics', severity: quality.eventIssues.length > 0 ? 'warn' : 'ok' },
-    { label: 'Incomplete sessions', n: quality.incompleteSessions.length, detail: 'In-progress or abandoned', severity: 'ok' },
-    { label: 'Sessions with no recorded events', n: quality.sessionsWithNoEvents.length, detail: 'No analytics rows produced', severity: quality.sessionsWithNoEvents.length > 0 ? 'warn' : 'ok' },
-    { label: 'Likely duplicate events', n: quality.duplicateEvents.length, detail: 'Same session, type, description within 2 seconds', severity: quality.duplicateEvents.length > 0 ? 'warn' : 'ok' },
-    { label: 'Timestamp inconsistencies', n: quality.tsIssues.length, detail: 'Events before session start, completions before start', severity: quality.tsIssues.length > 0 ? 'warn' : 'ok' },
-    { label: 'Completed sessions missing TASK_COMPLETED event', n: quality.sessionsWithoutCompletionEvent.length, detail: 'Status completed without terminal event', severity: quality.sessionsWithoutCompletionEvent.length > 0 ? 'warn' : 'ok' },
-    { label: 'Scrutiny responses with empty fields', n: quality.scrutinyEmptyFields.length, detail: 'Empty fields excluded from rubric items', severity: quality.scrutinyEmptyFields.length > 0 ? 'warn' : 'ok' },
-    { label: 'Reflections missing confidence', n: quality.reflectionsMissingConfidence.length, detail: 'Excluded from confidence-change stats', severity: quality.reflectionsMissingConfidence.length > 0 ? 'warn' : 'ok' },
-  ];
-  return (
-    <div className="space-y-5">
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="Data quality panel" subtitle={`Scope: ${quality.totals.sessions} sessions, ${quality.totals.events} events, ${quality.totals.scrutiny} scrutiny, ${quality.totals.reflections} reflections, ${quality.totals.aiInteractions} AI interactions`} legend={
-          <button onClick={() => exportAsCSV(checks.map((c) => ({ check: c.label, count: c.n, status: c.severity })), 'pause_data_quality')} className="flex items-center gap-1.5 text-xs border border-slate-300 px-2.5 py-1.5 rounded-lg hover:bg-slate-50"><Download className="w-3.5 h-3.5" /> Export CSV</button>
-        } />
-        <div className="grid sm:grid-cols-2 gap-3">
-          {checks.map((c) => (
-            <div key={c.label} className="flex items-start gap-2.5 border rounded-lg p-3">
-              {c.severity === 'ok' ? <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" /> : <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />}
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-slate-800">{c.label} <span className="font-bold text-slate-900">{c.n}</span></div>
-                <div className="text-[11px] text-slate-500 mt-0.5">{c.detail}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <CardHeader title="Research exports" subtitle="All exports are pseudonymous (participant IDs only) and respect the active filters" />
-        <div className="grid sm:grid-cols-2 gap-3">
-          <ExportCard label="Session-level derived indicators" description="One row per session: events, AI use, scrutiny rubric, behaviour class" onClick={() => exportAsCSV(sessionIndicatorRows(bundle), 'pause_session_indicators')} />
-          <ExportCard label="Raw event logs" description="Full chronological event stream" onClick={async () => {
-            const { fetchExportData } = await import('@/lib/exporter');
-            exportAsCSV(await fetchExportData('event_logs'), 'pause_event_logs');
-          }} />
-          <ExportCard label="Scrutiny responses with rubric" description="Per-response structural quality coding" onClick={() => exportAsCSV(bundle.scrutiny.map((s) => ({
-            participant_id: s.participant_id, session_id: s.session_id,
-            accuracy_judgment: s.accuracy_judgment, intended_action: s.intended_action, action_taken: s.action_taken,
-            test_result: s.test_result, produced_expected_result: s.produced_expected_result,
-            rubric_score: [(s.accuracy_judgment || '').trim() !== '', (s.intended_action || '').trim() !== '', (s.action_taken || '') !== '', (s.test_result || '').trim() !== ''].filter(Boolean).length,
-          })), 'pause_scrutiny_rubric')} />
-          <ExportCard label="Approved assessments" description="Marks, rubric sub-scores, ratings, approval timestamps" onClick={() => exportAsCSV(bundle.assessments.filter((a) => a.status === 'approved').map((a) => ({
-            participant_id: a.participant_id, session_id: a.session_id,
-            approved_mark: a.approved_mark, approved_correctness: a.approved_correctness, approved_approach: a.approved_approach, approved_quality: a.approved_quality, approved_testing: a.approved_testing,
-            metacog_planning: a.metacog_planning, metacog_monitoring: a.metacog_monitoring, metacog_scrutiny: a.metacog_scrutiny, metacog_evaluation: a.metacog_evaluation,
-            ai_suggested_mark: a.ai_suggested_mark, approved_at: a.approved_at,
-          })), 'pause_approved_assessments')} />
-          <ExportCard label="RQ datasets (all five)" description="Flat per-unit datasets for each research question" onClick={() => {
-            for (const q of RESEARCH_QUESTIONS) exportAsCSV(rqDataset(bundle, q.id), `pause_rq_${q.id.toLowerCase()}`);
-          }} />
-          <ExportCard label="Full export page" description="All raw tables in CSV or JSON" onClick={async () => {
-            const { fetchExportData, exportAsCSV: csv } = await import('@/lib/exporter');
-            csv(await fetchExportData('sessions'), 'pause_sessions');
-          }} />
-        </div>
-        <p className="text-[11px] text-slate-400 mt-4 flex gap-1.5"><X className="w-3.5 h-3.5 shrink-0 mt-px" />Exports never include emails, auth user ids or unapproved AI-suggested marks.</p>
-      </div>
-    </div>
-  );
-}
-
-function ExportCard({ label, description, onClick }: { label: string; description: string; onClick: () => void | Promise<void> }) {
-  return (
-    <button onClick={() => void onClick()} className="text-left border border-slate-200 rounded-lg p-4 hover:border-slate-400 transition-colors">
-      <div className="flex items-center gap-2 text-sm font-medium text-slate-900"><Download className="w-3.5 h-3.5 text-slate-400" /> {label}</div>
-      <div className="text-xs text-slate-500 mt-1">{description}</div>
-    </button>
-  );
-}
-
-/* ------------------------- shared helpers ------------------------- */
-
