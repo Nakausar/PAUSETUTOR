@@ -70,14 +70,17 @@ const ACTIVITY_UNITS: Unit[] = [
   { id: 'EVAL', label: 'Evaluation reflection', color: TYPE_COLORS.EVAL, kind: 'activity', match: (e) => classifyEvent(e) === 'EVAL' },
 ];
 
-/** Phase-level network: nodes are the five PAUSE phases (+ archived Edit), edges are observed phase-to-phase moves. */
+/**
+ * Phase-level network. Default analytical view: the five current PAUSE phases with
+ * historical Edit folded into Scrutinise, consecutive identical phases collapsed.
+ * Detailed editing/revision behaviour remains in the Activity Network.
+ */
 export function buildPhaseNetwork(data: NetworkDataset): NetworkGraph {
   return buildNetwork(data, [
     { id: 'plan', label: 'Plan', color: TYPE_COLORS.PLAN, kind: 'phase', match: (e) => e.pause_phase === 'plan' },
     { id: 'attempt', label: 'Attempt', color: TYPE_COLORS.IND_CODE, kind: 'phase', match: (e) => e.pause_phase === 'attempt' },
     { id: 'use_ai', label: 'Use AI', color: TYPE_COLORS.AI_REQ, kind: 'phase', match: (e) => e.pause_phase === 'use_ai' },
-    { id: 'scrutinise', label: 'Scrutinise', color: TYPE_COLORS.SCRUTINY, kind: 'phase', match: (e) => e.pause_phase === 'scrutinise' },
-    { id: 'edit', label: 'Scrutinise (Edit, archived)', color: '#A78BFA', kind: 'phase', match: (e) => e.pause_phase === 'edit' },
+    { id: 'scrutinise', label: 'Scrutinise', color: TYPE_COLORS.SCRUTINY, kind: 'phase', match: (e) => e.pause_phase === 'scrutinise' || e.pause_phase === 'edit' },
     { id: 'evaluate', label: 'Evaluate', color: TYPE_COLORS.EVAL, kind: 'phase', match: (e) => e.pause_phase === 'evaluate' },
   ]);
 }

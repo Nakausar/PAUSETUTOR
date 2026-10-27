@@ -70,11 +70,11 @@ export default function TaskWorkspace() {
     if (!session || !profile) return;
     if (phase === 'plan' && !planStartLogged.current) {
       planStartLogged.current = true;
-      void logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'plan', eventType: 'PLAN_STARTED', description: 'Student began planning their approach.', metadata: {} });
+      void logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'plan', eventType: 'PLAN_STARTED', description: 'Student began planning their approach.', metadata: {}, idempotencyKey: `${session.id}:plan_started` });
     }
     if (phase === 'evaluate' && !reflectionStartLogged.current) {
       reflectionStartLogged.current = true;
-      void logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'evaluate', eventType: 'REFLECTION_STARTED', description: 'Student began the final reflection.', metadata: {} });
+      void logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'evaluate', eventType: 'REFLECTION_STARTED', description: 'Student began the final reflection.', metadata: {}, idempotencyKey: `${session.id}:reflection_started` });
     }
   }, [phase, session, profile]);
 
@@ -104,7 +104,7 @@ export default function TaskWorkspace() {
             .update({ status: 'in_progress', started_at: new Date().toISOString(), current_pause_phase: 'plan', session_id: activeSession.id })
             .eq('task_id', foundTask.id)
             .eq('student_id', profile.id);
-          await logEvent({ sessionId: activeSession.id, taskId: foundTask.id, participantId: profile.participant_id, phase: 'plan', eventType: 'SESSION_STARTED', description: 'Student started a new PAUSE learning session.', metadata: { assignment_task_id: foundTask.id } });
+          await logEvent({ sessionId: activeSession.id, taskId: foundTask.id, participantId: profile.participant_id, phase: 'plan', eventType: 'SESSION_STARTED', description: 'Student started a new PAUSE learning session.', metadata: { assignment_task_id: foundTask.id }, idempotencyKey: `${activeSession.id}:session_started` });
         }
       }
     }

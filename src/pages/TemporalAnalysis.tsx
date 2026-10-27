@@ -4,8 +4,8 @@ import { Clock, Download, RefreshCw, Filter, ChevronDown, ChevronRight, AlertTri
 import { loadTemporalDataset, invalidateCache, type TemporalDataset } from '@/lib/temporal/dataService';
 import { auditDataQuality, LONG_GAP_MS, type DataQualityReport } from '@/lib/temporal/dataQuality';
 import {
-  ANALYSIS_VERSION, PHASE_COLORS, PHASE_DISPLAY, fmtDuration, GAP_CAP_MINUTES,
-  buildPhaseSequence, computeTransitionMatrix, computeSessionDurations, computeSessionIntervals,
+  ANALYSIS_VERSION, PHASE_COLORS, PHASE_DISPLAY, FIVE_PHASES, fmtDuration, GAP_CAP_MINUTES,
+  buildPhaseSequence, buildFivePhaseSteps, computeTransitionMatrix, computeFivePhaseTransitions, computeSessionDurations, computeSessionIntervals,
   buildStepTokens, discoverSequences, aiOptionFrequency, repeatedAiPerSession,
   type StepToken, type SessionDurations, type SessionIntervals,
 } from '@/lib/temporal/analysis';
@@ -78,6 +78,7 @@ export default function TemporalAnalysis() {
   const [pathwaysPage, setPathwaysPage] = useState(0);
   const [showRequestDetails, setShowRequestDetails] = useState(false);
   const [showRepeated, setShowRepeated] = useState(false);
+  const [rawTransitions, setRawTransitions] = useState(false);
   const [minEdgeWeight, setMinEdgeWeight] = useState(1);
   const [edgeProbabilityMode, setEdgeProbabilityMode] = useState(false);
   const [showNodeLabels, setShowNodeLabels] = useState(true);
@@ -149,13 +150,14 @@ export default function TemporalAnalysis() {
       intervals.set(s.id, computeSessionIntervals(s.id, evs, scoped.interactions.filter((i) => i.session_id === s.id), scoped.scrutiny.filter((sc) => sc.session_id === s.id)));
       tokensBySession.set(s.id, { tokens: buildStepTokens(evs, scoped.interactions.filter((i) => i.session_id === s.id), scoped.scrutiny.filter((sc) => sc.session_id === s.id)), participantId: s.participant_id });
     }
-    const transitions = computeTransitionMatrix(eventsBySession);
+    const transitions = computeFivePhaseTransitions(eventsBySession);
+    const rawTransitionMatrix = computeTransitionMatrix(eventsBySession);
     const patterns = discoverSequences(tokensBySession, seqMinLen, seqMaxLen, 2);
     const netData: NetworkDataset = { events: scoped.events, interactions: scoped.interactions, scrutiny: scoped.scrutiny };
     const phaseNet = buildPhaseNetwork(netData);
     const activityNet = buildActivityNetwork(netData);
     const aiNet = buildAiNetwork({ events: scoped.events, interactions: scoped.interactions, scrutiny: scoped.scrutiny, labels: AI_LABELS, optionFilter: aiNetOption === 'all' ? null : aiNetOption });
-    return { eventsBySession, durations, intervals, tokensBySession, transitions, patterns, phaseNet, activityNet, aiNet, netData };
+    return { eventsBySession, durations, intervals, tokensBySession, transitions, rawTransitionMatrix, patterns, phaseNet, activityNet, aiNet, netData };
   }, [scoped, seqMinLen, seqMaxLen, aiNetOption]);
 
   if (loading && !data) return <div className="max-w-7xl mx-auto px-4 py-8 text-slate-400 text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Loading research data...</div>;
@@ -241,7 +243,7 @@ export default function TemporalAnalysis() {
 
       {!scoped || !computed ? null : (
         <>
-          {tab === 'overview' && <OverviewTab scoped={scoped} computed={computed} onGoTo={(t) => setTab(t)} />}
+          {tab === 'overview' && <OverviewTab scoped={scoped} computed={computed} onGoTo={(t) => setTab(t)} rawTransitions={rawTransitions} setRawTransitions={setRawTransitions} excludedEventIds={data?.excludedEventIds ?? []} />}
           {tab === 'pathways' && <PathwaysTab scoped={scoped} computed={computed} tasks={tasks} selectedSession={selectedSession} setSelectedSession={setSelectedSession} page={pathwaysPage} setPage={setPathwaysPage} filters={filters} clickAiOption={clickAiOption} />}
           {tab === 'ai' && <AiBehaviourTab scoped={scoped} computed={computed} showRequestDetails={showRequestDetails} setShowRequestDetails={setShowRequestDetails} showRepeated={showRepeated} setShowRepeated={setShowRepeated} clickAiOption={clickAiOption} activeOption={filters.aiOption} />}
           {tab === 'networks' && <NetworksTab scoped={scoped} computed={computed} netSource={netSource} setNetSource={setNetSource} minEdgeWeight={minEdgeWeight} setMinEdgeWeight={setMinEdgeWeight} edgeProbabilityMode={edgeProbabilityMode} setEdgeProbabilityMode={setEdgeProbabilityMode} showNodeLabels={showNodeLabels} setShowNodeLabels={setShowNodeLabels} aiNetOption={aiNetOption} setAiNetOption={setAiNetOption} netSelection={netSelection} setNetSelection={setNetSelection} />}        </>
@@ -252,7 +254,7 @@ export default function TemporalAnalysis() {
 
 /* ================= Overview ================= */
 
-function OverviewTab({ scoped, computed, onGoTo }: { scoped: Scoped; computed: Computed; onGoTo: (t: TabKey) => void }) {
+function OverviewTab({ scoped, computed, onGoTo, rawTransitions, setRawTransitions, excludedEventIds }: { scoped: Scoped; computed: Computed; onGoTo: (t: TabKey) => void; rawTransitions: boolean; setRawTransitions: (v: boolean) => void; excludedEventIds: string[] }) {
   const completed = scoped.sessions.filter((s) => s.status === 'completed').length;
   const participantCount = new Set(scoped.sessions.map((s) => s.participant_id)).size;
   const activityCounts = new Map<string, number>();
@@ -263,7 +265,8 @@ function OverviewTab({ scoped, computed, onGoTo }: { scoped: Scoped; computed: C
   activityCounts.set('AI_REQ', (activityCounts.get('AI_REQ') ?? 0) + scoped.interactions.length);
   activityCounts.set('SCRUTINY', (activityCounts.get('SCRUTINY') ?? 0) + scoped.scrutiny.filter((s) => !scoped.events.some((e) => classifyEvent(e) === 'SCRUTINY' && e.session_id === s.session_id && e.timestamp === s.created_at)).length);
   const activityData = Array.from(activityCounts.entries()).map(([k, n]) => ({ name: STEP_LABELS[k as StepToken] ?? k, count: n, color: STEP_COLORS[k as StepToken] ?? '#64748B' })).filter((d) => d.count > 0).sort((a, b) => b.count - a.count);
-  const topTransitions = computed.transitions.phases.flatMap((a, i) => computed.transitions.phases.map((b, j) => ({ label: `${PHASE_DISPLAY[a]} → ${PHASE_DISPLAY[b]}`, count: computed.transitions.counts[i][j], color: PHASE_COLORS[a] })))
+  const activeMatrix = rawTransitions ? computed.rawTransitionMatrix : computed.transitions;
+  const topTransitions = activeMatrix.phases.flatMap((a, i) => activeMatrix.phases.map((b, j) => ({ label: `${PHASE_DISPLAY[a] ?? a} → ${PHASE_DISPLAY[b] ?? b}`, count: activeMatrix.counts[i][j], color: PHASE_COLORS[a] ?? '#64748B' })))
     .filter((t) => t.count > 0).sort((a, b) => b.count - a.count).slice(0, 8);
 
   return (
@@ -291,7 +294,18 @@ function OverviewTab({ scoped, computed, onGoTo }: { scoped: Scoped; computed: C
             </div>
           )}
         </Section>
-        <Section title="Most frequent phase transitions" subtitle="Top observed phase-to-phase movements across sessions.">
+        <Section
+          title="Most frequent phase transitions"
+          subtitle={rawTransitions
+            ? 'Historical raw view: original event labels including archived Edit and Completed, reconstructed from the same timestamped events.'
+            : 'Five-phase PAUSE framework: historical Edit folded into Scrutinise, consecutive identical phases collapsed, completion tracked as session status. Reconstructed from timestamped events.'}
+          actions={
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
+              <input type="checkbox" checked={rawTransitions} onChange={(e) => setRawTransitions(e.target.checked)} className="rounded" />
+              Historical raw transitions
+            </label>
+          }
+        >
           {topTransitions.length === 0 ? <EmptyState>No phase transitions recorded in scope.</EmptyState> : (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
@@ -309,6 +323,9 @@ function OverviewTab({ scoped, computed, onGoTo }: { scoped: Scoped; computed: C
           )}
         </Section>
       </div>
+      {!rawTransitions && computed.rawTransitionMatrix.counts.some((row) => row.some((c) => c > 0)) && (
+        <p className="text-[11px] text-slate-400 -mt-2">Historical archived Edit events ({computed.rawTransitionMatrix.phases.includes('edit') ? 'present' : 'none'}) remain visible in raw exports and the historical raw view; they are folded into Scrutinise in this five-phase summary.</p>
+      )}
       <div className="flex flex-wrap gap-3">
         <button onClick={() => onGoTo('pathways')} className="text-sm text-blue-600 hover:text-blue-800 underline">Explore learning pathways →</button>
         <button onClick={() => onGoTo('networks')} className="text-sm text-blue-600 hover:text-blue-800 underline">Open network visualisations →</button>
@@ -330,7 +347,9 @@ function OverviewTab({ scoped, computed, onGoTo }: { scoped: Scoped; computed: C
           <ExportCard label="Raw event records" desc="Timestamped events with stable ids, participant, task, session, phase and type" onClick={() => exportAsCSV(scoped.events.map(toRawEventRow), 'temporal_raw_events')} />
           <ExportCard label="Learning sequences" desc="Ordered phase steps per session with event counts and spans (raw labels, incl. archived Edit)" onClick={() => exportAsCSV(exportSequences(scoped, computed.eventsBySession), 'temporal_learning_sequences')} />
           <ExportCard label="AI option selections" desc="Every AI request with option id, label, timestamps and scrutiny linkage" onClick={() => exportAsCSV(exportAiSelections(scoped), 'temporal_ai_option_selections')} />
-          <ExportCard label="Phase transition frequencies" desc="from → to counts and row probabilities" onClick={() => { const t = computed.transitions; exportAsCSV(t.phases.flatMap((a, i) => t.phases.map((b, j) => ({ from_phase: a, to_phase: b, count: t.counts[i][j], row_probability: t.probabilities[i][j].toFixed(4) }))).filter((r: { count: number }) => r.count > 0), 'temporal_phase_transitions'); }} />
+          <ExportCard label="Phase transition frequencies (five-phase)" desc="from → to counts and row probabilities in the derived five-phase view (Edit folded into Scrutinise, completion excluded)" onClick={() => { const t = computed.transitions; exportAsCSV(t.phases.flatMap((a, i) => t.phases.map((b, j) => ({ from_phase: a, to_phase: b, count: t.counts[i][j], row_probability: t.probabilities[i][j].toFixed(4) }))).filter((r: { count: number }) => r.count > 0), 'temporal_phase_transitions'); }} />
+          <ExportCard label="Phase transitions (historical raw)" desc="Original event labels including archived Edit and Completed — for research inspection of six-phase history" onClick={() => { const t = computed.rawTransitionMatrix; exportAsCSV(t.phases.flatMap((a, i) => t.phases.map((b, j) => ({ from_phase: a, to_phase: b, count: t.counts[i][j], row_probability: t.probabilities[i][j].toFixed(4) }))).filter((r: { count: number }) => r.count > 0), 'temporal_phase_transitions_raw'); }} />
+          <ExportCard label="Excluded duplicate events (audit)" desc="Every event id excluded from the derived analytical dataset, with the applied rule version" onClick={() => { exportAsCSV(excludedEventIds.map((id) => ({ event_id: id, rule: 'identical payload within 5s or same type+description within 2s', analysis_version: ANALYSIS_VERSION })), 'temporal_excluded_events'); }} />
           <ExportCard label="Temporal duration metrics" desc="Observed vs estimated active time per session and phase" onClick={() => exportAsCSV(exportDurations(scoped.sessions, computed.durations), 'temporal_durations')} />
           <ExportCard label="Frequent sequence counts" desc="Discovered n-grams with frequency controls applied" onClick={() => exportAsCSV(computed.patterns.map((p) => ({ sequence: p.sequence, length: p.length, count: p.count, participants: p.participants, sessions: p.sessions })), 'temporal_sequence_patterns')} />
           <ExportCard label="Participant temporal summaries" desc="Per participant: sessions, AI requests, scrutiny cycles, observed and active time" onClick={() => exportAsCSV(exportParticipantSummaries(scoped, computed), 'temporal_participant_summaries')} />
@@ -681,6 +700,11 @@ function SessionDetail({ session, events, interactions, scrutiny, durations, int
         <MetricCard label="Observed" value={fmtDuration(durations?.observedMs ?? null)} />
         <MetricCard label="Est. active" value={fmtDuration(durations?.activeMs ?? null)} />
       </div>
+      {durations?.interrupted && (
+        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+          Interrupted session: largest inactivity gap {fmtDuration(durations.maxGapMs)} — the observed span includes this idle time and is not continuous engagement.
+        </p>
+      )}
       <div className="space-y-1 max-h-72 overflow-y-auto">
         {ordered.map((e) => (
           <div key={e.id} className="flex items-start gap-2 text-xs border-b border-slate-100 pb-1">
@@ -758,7 +782,12 @@ function exportDurations(sessions: Session[], durations: Map<string, SessionDura
   for (const s of sessions) {
     const d = durations.get(s.id);
     if (!d) continue;
-    rows.push({ session_id: s.id, participant_id: s.participant_id, phase: 'TOTAL', observed_ms: d.observedMs ?? '', active_ms: d.activeMs });
+    rows.push({
+      session_id: s.id, participant_id: s.participant_id, phase: 'TOTAL',
+      observed_ms: d.observedMs ?? '', active_ms: d.activeMs,
+      max_inactivity_gap_ms: d.maxGapMs ?? '', interrupted: d.interrupted,
+      note: d.interrupted ? 'observed span includes inactivity gap(s) exceeding the 5 min cap — not continuous engagement' : '',
+    });
     for (const [phase, v] of Object.entries(d.perPhase)) rows.push({ session_id: s.id, participant_id: s.participant_id, phase, observed_ms: v.observedMs, active_ms: v.activeMs });
   }
   return rows;
@@ -808,7 +837,8 @@ interface Computed {
   intervals: Map<string, SessionIntervals>;
   eventsBySession: Map<string, EventLog[]>;
   tokensBySession: Map<string, { tokens: StepToken[]; participantId: string }>;
-  transitions: ReturnType<typeof computeTransitionMatrix>;
+  transitions: ReturnType<typeof computeFivePhaseTransitions>;
+  rawTransitionMatrix: ReturnType<typeof computeTransitionMatrix>;
   patterns: ReturnType<typeof discoverSequences>;
   phaseNet: NetworkGraph;
   activityNet: NetworkGraph;

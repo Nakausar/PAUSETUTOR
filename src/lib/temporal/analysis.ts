@@ -4,11 +4,27 @@
 
 import type { EventLog, AIInteraction, ScrutinyResponse, Assessment, Session } from '../types';
 
-export const ANALYSIS_VERSION = '1.0.0';
+export const ANALYSIS_VERSION = '1.1.0';
 
 /** Historical six-phase framework: 'edit' is preserved as its own node, never silently merged. */
 export const TEMPORAL_PHASES = ['plan', 'attempt', 'use_ai', 'scrutinise', 'edit', 'evaluate', 'completed'] as const;
 export type TemporalPhase = (typeof TEMPORAL_PHASES)[number];
+
+/** Current five-phase PAUSE framework used for the default analytical view. */
+export const FIVE_PHASES = ['plan', 'attempt', 'use_ai', 'scrutinise', 'evaluate'] as const;
+export type FivePhase = (typeof FIVE_PHASES)[number];
+
+/**
+ * Maps a raw historical phase onto the derived five-phase view:
+ * archived 'edit' folds into 'scrutinise'; 'completed' is session status, not a
+ * learning phase, and is excluded. Other phases pass through unchanged.
+ * Raw labels and records are never altered — this mapping is analysis-only.
+ */
+export function toFivePhase(value: string | null | undefined): FivePhase | null {
+  if (value === 'edit') return 'scrutinise';
+  if (!value) return null;
+  return (FIVE_PHASES as readonly string[]).includes(value) ? (value as FivePhase) : null;
+}
 
 /** Spec-mandated display colours (Plan blue, Attempt green, Use AI orange, Scrutinise purple, Evaluate red). */
 export const PHASE_COLORS: Record<string, string> = {
@@ -57,6 +73,10 @@ export interface SessionDurations {
   lastTs: string | null;
   observedMs: number | null;
   activeMs: number;
+  /** Largest silent gap inside the session; observedMs can be dominated by it. */
+  maxGapMs: number | null;
+  /** True when any single inactivity gap exceeds GAP_CAP_MINUTES — treat observed span with caution. */
+  interrupted: boolean;
   perPhase: Record<string, { observedMs: number; activeMs: number }>;
 }
 
@@ -83,24 +103,30 @@ export function orderEvents(events: EventLog[]): EventLog[] {
 }
 
 /**
- * Duplicate suppression: identical (session, type, description) within 2 seconds
- * counts once, so retry-induced double logging cannot inflate transition counts.
+ * Analytical duplicate suppression. Two rules, applied to an ordered stream:
+ * 1. Identical action evidence — same session, type, description AND identical
+ *    metadata payload within 5 seconds — is one logical action logged twice.
+ * 2. Same session, type and description within 2 seconds — retry-window collapse.
+ * Timestamp proximity alone is never sufficient: events outside these rules are kept.
+ * Excluded ids are returned so the exclusion audit is reproducible.
  */
-export function dedupeEvents(events: EventLog[]): { kept: EventLog[]; duplicateCount: number } {
+export function dedupeEvents(events: EventLog[]): { kept: EventLog[]; duplicateCount: number; excludedIds: string[] } {
   const sorted = orderEvents(events);
   const kept: EventLog[] = [];
-  let duplicateCount = 0;
+  const excludedIds: string[] = [];
   for (const e of sorted) {
     const prev = kept[kept.length - 1];
-    const dup = prev
+    const gap = prev ? new Date(e.timestamp).getTime() - new Date(prev.timestamp).getTime() : Infinity;
+    const sameAction = prev
       && prev.session_id === e.session_id
       && prev.event_type === e.event_type
-      && prev.event_description === e.event_description
-      && new Date(e.timestamp).getTime() - new Date(prev.timestamp).getTime() <= 2000;
-    if (dup) duplicateCount++;
+      && prev.event_description === e.event_description;
+    const identicalPayload = sameAction && JSON.stringify(prev.metadata ?? {}) === JSON.stringify(e.metadata ?? {});
+    const dup = prev && sameAction && ((identicalPayload && gap <= 5000) || gap <= 2000);
+    if (dup) excludedIds.push(e.id);
     else kept.push(e);
   }
-  return { kept, duplicateCount };
+  return { kept, duplicateCount: excludedIds.length, excludedIds };
 }
 
 export function toPhase(value: string | null | undefined): TemporalPhase | null {
@@ -128,8 +154,38 @@ export function buildPhaseSequence(events: EventLog[], completedAt: string | nul
   return steps;
 }
 
+/**
+ * Derived five-phase sequence: the authoritative analytical view.
+ * Ordered phase-tagged events are mapped through toFivePhase (Edit → Scrutinise,
+ * Completed excluded as session status), then consecutive identical phases collapse,
+ * so PHASE_ENTERED / PHASE_EXITED / PHASE_TRANSITION triples for one move count once,
+ * Scrutinise → Scrutinise never appears, and legitimate revisits
+ * (e.g. Scrutinise → Attempt → Scrutinise) are preserved.
+ */
+export function buildFivePhaseSteps(events: EventLog[]): PhaseStep[] {
+  const ordered = orderEvents(events);
+  const steps: PhaseStep[] = [];
+  for (const e of ordered) {
+    const phase = toFivePhase(e.pause_phase);
+    if (!phase) continue;
+    const last = steps[steps.length - 1];
+    if (last && last.phase === phase) {
+      last.eventCount++;
+      last.toTs = e.timestamp;
+    } else {
+      steps.push({ phase, fromTs: e.timestamp, toTs: e.timestamp, eventCount: 1 });
+    }
+  }
+  return steps;
+}
+
 const FORWARD_ORDER: Record<string, number> = { plan: 0, attempt: 1, use_ai: 2, scrutinise: 3, edit: 4, evaluate: 5 };
 
+/**
+ * Raw historical transition matrix (seven labels incl. archived Edit and Completed).
+ * Kept for the optional Historical Raw Transitions view; the default analytical
+ * matrix is computeFivePhaseTransitions.
+ */
 export function computeTransitionMatrix(sessionsEvents: Map<string, EventLog[]>): TransitionMatrix {
   const phases = [...TEMPORAL_PHASES];
   const idx = new Map(phases.map((p, i) => [p, i]));
@@ -160,18 +216,53 @@ export function computeTransitionMatrix(sessionsEvents: Map<string, EventLog[]>)
   return { phases, counts, rowTotals, probabilities, forward, backward };
 }
 
+/**
+ * Default five-phase transition matrix. Per session: ordered events are mapped to
+ * the five-phase view and consecutive identical phases collapse before consecutive
+ * distinct steps are counted, so transitions are never counted within a phase and
+ * never across session boundaries. Row probabilities are per-source-phase shares.
+ */
+export function computeFivePhaseTransitions(sessionsEvents: Map<string, EventLog[]>): TransitionMatrix {
+  const phases = [...FIVE_PHASES];
+  const idx = new Map<string, number>(phases.map((p, i) => [p as string, i]));
+  const n = phases.length;
+  const counts: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
+  for (const events of sessionsEvents.values()) {
+    const steps = buildFivePhaseSteps(events);
+    for (let i = 0; i + 1 < steps.length; i++) {
+      const a = idx.get(steps[i].phase)!;
+      const b = idx.get(steps[i + 1].phase)!;
+      counts[a][b]++;
+    }
+  }
+  const rowTotals = counts.map((row) => row.reduce((s, v) => s + v, 0));
+  const probabilities = counts.map((row, i) => row.map((v) => (rowTotals[i] > 0 ? v / rowTotals[i] : 0)));
+  let forward = 0;
+  let backward = 0;
+  for (let a = 0; a < n; a++) {
+    for (let b = 0; b < n; b++) {
+      if (a === b) continue;
+      if (b > a) forward += counts[a][b];
+      else backward += counts[a][b];
+    }
+  }
+  return { phases, counts, rowTotals, probabilities, forward, backward };
+}
+
 /** Wall-clock time per phase. Observed = raw elapsed span; Active = segments capped at GAP_CAP to limit idle inflation. */
 export function computeSessionDurations(sessionId: string, events: EventLog[], completedAt: string | null = null): SessionDurations {
   const ordered = orderEvents(events).filter((e) => toPhase(e.pause_phase));
   const perPhase: Record<string, { observedMs: number; activeMs: number }> = {};
-  if (ordered.length === 0) return { sessionId, firstTs: null, lastTs: null, observedMs: null, activeMs: 0, perPhase };
+  if (ordered.length === 0) return { sessionId, firstTs: null, lastTs: null, observedMs: null, activeMs: 0, maxGapMs: null, interrupted: false, perPhase };
   const first = new Date(ordered[0].timestamp).getTime();
   let end = new Date(ordered[ordered.length - 1].timestamp).getTime();
   if (completedAt && !Number.isNaN(new Date(completedAt).getTime())) end = Math.max(end, new Date(completedAt).getTime());
   let activeMs = 0;
+  let maxGapMs = 0;
   for (let i = 0; i < ordered.length; i++) {
     const next = i + 1 < ordered.length ? new Date(ordered[i + 1].timestamp).getTime() : end;
     const raw = Math.max(0, next - new Date(ordered[i].timestamp).getTime());
+    if (i + 1 < ordered.length && raw > maxGapMs) maxGapMs = raw;
     const capped = Math.min(raw, GAP_CAP_MS);
     const phase = toPhase(ordered[i].pause_phase)!;
     if (!perPhase[phase]) perPhase[phase] = { observedMs: 0, activeMs: 0 };
@@ -179,7 +270,7 @@ export function computeSessionDurations(sessionId: string, events: EventLog[], c
     perPhase[phase].activeMs += capped;
     activeMs += capped;
   }
-  return { sessionId, firstTs: ordered[0].timestamp, lastTs: new Date(end).toISOString(), observedMs: end - first, activeMs, perPhase };
+  return { sessionId, firstTs: ordered[0].timestamp, lastTs: new Date(end).toISOString(), observedMs: end - first, activeMs, maxGapMs, interrupted: maxGapMs > GAP_CAP_MS, perPhase };
 }
 
 function ms(a: string | null | undefined, b: string | null | undefined): number | null {

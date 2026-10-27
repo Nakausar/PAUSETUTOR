@@ -2,7 +2,7 @@
 // Run: npx tsx src/lib/temporal/analysis.test.ts
 
 import {
-  orderEvents, dedupeEvents, buildPhaseSequence, computeTransitionMatrix,
+  orderEvents, dedupeEvents, buildPhaseSequence, buildFivePhaseSteps, computeTransitionMatrix, computeFivePhaseTransitions,
   computeSessionDurations, computeSessionIntervals, buildStepTokens, discoverSequences,
   aiOptionFrequency, repeatedAiPerSession, gradeBandFor, compareByGradeBand,
 } from './analysis';
@@ -65,13 +65,89 @@ function mkScrutiny(partial: Partial<ScrutinyResponse>): ScrutinyResponse {
 {
   const a = ev({ timestamp: '2026-01-01T00:00:00Z', event_type: 'PHASE_ENTERED', event_description: 'x' });
   const b = ev({ timestamp: '2026-01-01T00:00:01.500Z', event_type: 'PHASE_ENTERED', event_description: 'x' });
-  const { kept, duplicateCount } = dedupeEvents([a, b]);
-  check('dedupe collapses near-identical events within 2s', { n: kept.length, duplicates: duplicateCount }, { n: 1, duplicates: 1 });
+  const { kept, duplicateCount, excludedIds } = dedupeEvents([a, b]);
+  check('dedupe collapses near-identical events within 2s', { n: kept.length, duplicates: duplicateCount, ids: excludedIds }, { n: 1, duplicates: 1, ids: [b.id] });
 }
 {
   const a = ev({ timestamp: '2026-01-01T00:00:00Z', event_type: 'CODE_RUN', event_description: 'run 1' });
   const b = ev({ timestamp: '2026-01-01T00:00:01Z', event_type: 'CODE_RUN', event_description: 'run 2' });
   check('dedupe keeps genuinely distinct events', dedupeEvents([a, b]).kept.length, 2);
+}
+{
+  // StrictMode-style double log: identical payload 4s apart is excluded;
+  // identical payload but different content 4s apart is kept.
+  const a = ev({ timestamp: '2026-01-01T00:00:00Z', event_type: 'TASK_COMPLETED', event_description: 'done', metadata: { confidence: 4 } });
+  const b = ev({ timestamp: '2026-01-01T00:00:04Z', event_type: 'TASK_COMPLETED', event_description: 'done', metadata: { confidence: 4 } });
+  const c = ev({ timestamp: '2026-01-01T00:00:04Z', event_type: 'TASK_COMPLETED', event_description: 'done', metadata: { confidence: 5 } });
+  const r = dedupeEvents([a, b, c]);
+  check('dedupe excludes identical-payload re-log within 5s', { n: r.kept.length, dupes: r.duplicateCount }, { n: 2, dupes: 1 });
+}
+{
+  // Different sessions are never collapsed against each other.
+  const a = ev({ timestamp: '2026-01-01T00:00:00Z', event_type: 'PHASE_ENTERED', event_description: 'x', session_id: 'sA' });
+  const b = ev({ timestamp: '2026-01-01T00:00:01Z', event_type: 'PHASE_ENTERED', event_description: 'x', session_id: 'sB' });
+  check('dedupe respects session boundaries', dedupeEvents([a, b]).kept.length, 2);
+}
+
+// --- buildFivePhaseSteps ---
+{
+  // Historical sequence from the research brief:
+  // Plan → Attempt → Use AI → Scrutinise → Edit → Scrutinise → Edit → Scrutinise → Evaluate → Completed
+  const t = (m: number) => `2026-01-01T00:${String(m).padStart(2, '0')}:00Z`;
+  const seq = [
+    ev({ timestamp: t(0), pause_phase: 'plan', event_type: 'PHASE_ENTERED' }),
+    ev({ timestamp: t(1), pause_phase: 'attempt', event_type: 'PHASE_ENTERED' }),
+    ev({ timestamp: t(2), pause_phase: 'use_ai', event_type: 'PHASE_ENTERED' }),
+    ev({ timestamp: t(3), pause_phase: 'scrutinise', event_type: 'PHASE_ENTERED' }),
+    ev({ timestamp: t(4), pause_phase: 'edit', event_type: 'CODE_REVISED' }),
+    ev({ timestamp: t(5), pause_phase: 'scrutinise', event_type: 'SCRUTINISE_SUBMITTED' }),
+    ev({ timestamp: t(6), pause_phase: 'edit', event_type: 'CODE_REVISED' }),
+    ev({ timestamp: t(7), pause_phase: 'scrutinise', event_type: 'SCRUTINISE_SUBMITTED' }),
+    ev({ timestamp: t(8), pause_phase: 'evaluate', event_type: 'REFLECTION_SUBMITTED' }),
+    ev({ timestamp: t(9), pause_phase: 'completed', event_type: 'TASK_COMPLETED' }),
+  ];
+  const steps = buildFivePhaseSteps(seq);
+  check('five-phase mapping collapses Edit/Scrutinise repetitions', steps.map((s) => s.phase), ['plan', 'attempt', 'use_ai', 'scrutinise', 'evaluate']);
+  const bySession = new Map([['sess1', seq]]);
+  const m = computeFivePhaseTransitions(bySession);
+  const pi = new Map(m.phases.map((p, i) => [p, i]));
+  check('five-phase transitions exact counts', [
+    m.counts[pi.get('plan')!][pi.get('attempt')!],
+    m.counts[pi.get('attempt')!][pi.get('use_ai')!],
+    m.counts[pi.get('use_ai')!][pi.get('scrutinise')!],
+    m.counts[pi.get('scrutinise')!][pi.get('evaluate')!],
+  ], [1, 1, 1, 1]);
+  check('five-phase matrix has no self-transitions', m.phases.map((_, i) => m.counts[i][i]), [0, 0, 0, 0, 0]);
+  check('five-phase matrix excludes Completed', m.phases.includes('completed'), false);
+}
+{
+  // Legitimate backward navigation preserved: Scrutinise → Attempt → Scrutinise.
+  const seq = [
+    ev({ timestamp: '2026-01-01T00:00:00Z', pause_phase: 'scrutinise', event_type: 'SCRUTINISE_SUBMITTED' }),
+    ev({ timestamp: '2026-01-01T00:02:00Z', pause_phase: 'attempt', event_type: 'CODE_RUN' }),
+    ev({ timestamp: '2026-01-01T00:04:00Z', pause_phase: 'scrutinise', event_type: 'SCRUTINISE_SUBMITTED' }),
+  ];
+  const bySession = new Map([['sess1', seq]]);
+  const m = computeFivePhaseTransitions(bySession);
+  const pi = new Map(m.phases.map((p, i) => [p, i]));
+  check('backward revisit Scrutinise→Attempt→Scrutinise preserved', {
+    s2a: m.counts[pi.get('scrutinise')!][pi.get('attempt')!],
+    a2s: m.counts[pi.get('attempt')!][pi.get('scrutinise')!],
+    backward: m.backward,
+    forward: m.forward,
+  }, { s2a: 1, a2s: 1, backward: 1, forward: 1 });
+}
+{
+  // Transitions never cross session boundaries: identical phase pair in two sessions counts twice, not chained.
+  const mk = (session: string, ts: string, phase: EventLog['pause_phase']) =>
+    ev({ session_id: session, timestamp: ts, pause_phase: phase, event_type: 'PHASE_ENTERED' });
+  const bySession = new Map<string, EventLog[]>([
+    ['sA', [mk('sA', '2026-01-01T00:00:00Z', 'plan'), mk('sA', '2026-01-01T00:01:00Z', 'attempt')]],
+    ['sB', [mk('sB', '2026-01-01T05:00:00Z', 'attempt'), mk('sB', '2026-01-01T05:01:00Z', 'plan')]],
+  ]);
+  const m = computeFivePhaseTransitions(bySession);
+  const pi = new Map(m.phases.map((p, i) => [p, i]));
+  check('transitions computed per session only', { pa: m.counts[pi.get('plan')!][pi.get('attempt')!], ap: m.counts[pi.get('attempt')!][pi.get('plan')!] }, { pa: 1, ap: 1 });
 }
 
 // --- buildPhaseSequence ---

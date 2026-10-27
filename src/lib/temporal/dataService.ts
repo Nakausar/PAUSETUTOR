@@ -37,6 +37,8 @@ export interface TemporalDataset {
   assessments: Assessment[];
   fetchedAt: string;
   duplicateEventsRemoved: number;
+  /** Ids of event rows excluded from the derived analytical dataset (exclusion audit trail). */
+  excludedEventIds: string[];
   analysisVersion: string;
 }
 
@@ -64,7 +66,7 @@ export async function loadTemporalDataset(force = false): Promise<TemporalDatase
     fetchAll<Plan>('plans', 'id, participant_id, session_id, student_id, plan_text, confidence, version, created_after_ai, created_at', 'created_at', true),
     fetchAll<Assessment>('assessments', '*', 'updated_at', true),
   ]);
-  const { kept, duplicateCount } = dedupeEvents(events);
+  const { kept, duplicateCount, excludedIds } = dedupeEvents(events);
   const dataset: TemporalDataset = {
     sessions,
     tasks,
@@ -75,6 +77,7 @@ export async function loadTemporalDataset(force = false): Promise<TemporalDatase
     assessments,
     fetchedAt: new Date().toISOString(),
     duplicateEventsRemoved: duplicateCount,
+    excludedEventIds: excludedIds,
     analysisVersion: ANALYSIS_VERSION,
   };
   cache = { dataset, fetchedAt: Date.now() };
