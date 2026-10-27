@@ -5,6 +5,7 @@ import Navbar from '@/components/Navbar';
 import StudentDashboard from '@/pages/StudentDashboard';
 import TaskWorkspace from '@/pages/TaskWorkspace';
 import ResearcherDashboard from '@/pages/ResearcherDashboard';
+import TemporalAnalysis from '@/pages/TemporalAnalysis';
 import TaskManagement from '@/pages/TaskManagement';
 import DataExport from '@/pages/DataExport';
 import SystemSettingsPage from '@/pages/SystemSettingsPage';
@@ -57,6 +58,7 @@ function AppRoutes() {
         <Route path="/task/:sessionId" element={<ProtectedRoute requireRole="student"><AppShell><TaskWorkspace /></AppShell></ProtectedRoute>} />
         <Route path="/task/:sessionId/results" element={<ProtectedRoute requireRole="student"><AppShell><TaskResults /></AppShell></ProtectedRoute>} />
         <Route path="/researcher" element={<ProtectedRoute requireRole="researcher"><AppShell><ResearcherDashboard /></AppShell></ProtectedRoute>} />
+        <Route path="/researcher/temporal-analysis" element={<ProtectedRoute requireRole="researcher"><AppShell><TemporalAnalysis /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/session/:sessionId" element={<ProtectedRoute requireRole="researcher"><AppShell><SessionTimeline /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/session/:sessionId/assessment" element={<ProtectedRoute requireRole="researcher"><AppShell><SessionAssessment /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/tasks" element={<ProtectedRoute requireRole="researcher"><AppShell><TaskManagement /></AppShell></ProtectedRoute>} />

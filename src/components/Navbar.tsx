@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { GraduationCap, LogOut, Menu, X, LayoutDashboard, FolderOpen, Download, Settings, ClipboardList } from 'lucide-react';
+import { GraduationCap, LogOut, Menu, X, LayoutDashboard, FolderOpen, Download, Settings, ClipboardList, Clock } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 
 export default function Navbar() {
@@ -18,6 +18,7 @@ export default function Navbar() {
   const researcherLinks = [
     { to: '/researcher', label: 'Overview', icon: LayoutDashboard },
     { to: '/researcher/tasks', label: 'Tasks', icon: FolderOpen },
+    { to: '/researcher/temporal-analysis', label: 'Temporal Analysis', icon: Clock },
     { to: '/researcher/export', label: 'Export', icon: Download },
     { to: '/researcher/settings', label: 'Settings', icon: Settings },
   ];
