@@ -33,6 +33,12 @@ interface Props {
   fullscreenSlot?: React.ReactNode;
 }
 
+// Shared cose layout: generous spacing so node labels do not overlap and nodes are not clipped at the borders.
+const LAYOUT: cytoscape.LayoutOptions = {
+  name: 'cose', animate: false, randomize: false, idealEdgeLength: 140, nodeOverlap: 40,
+  nodeRepulsion: 24000, gravity: 0.45, padding: 60,
+} as cytoscape.LayoutOptions;
+
 /**
  * Force-directed network with coloured nodes, curved edges, arrows, zoom/pan,
  * hover tooltips and click inspection. Nodes sized by frequency, edges by
@@ -92,7 +98,7 @@ export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWe
         { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#1d4ed8' } },
         { selector: 'edge:selected', style: { 'line-color': '#1d4ed8', 'target-arrow-color': '#1d4ed8', opacity: 1 } },
       ],
-      layout: { name: 'cose', animate: false, randomize: false, idealEdgeLength: 90, nodeOverlap: 24, nodeRepulsion: 9000, gravity: 0.6, padding: 30 } as cytoscape.LayoutOptions,
+      layout: { ...LAYOUT } as cytoscape.LayoutOptions,
       wheelSensitivity: 0.2,
     });
     cyRef.current = cy;
@@ -150,8 +156,8 @@ export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWe
         });
       }
     });
-    cy.layout({ name: 'cose', animate: false, randomize: false, idealEdgeLength: 90, nodeOverlap: 24, nodeRepulsion: 9000, gravity: 0.6, padding: 30 } as cytoscape.LayoutOptions).run();
-    cy.fit(undefined, 30);
+    cy.layout({ ...LAYOUT } as cytoscape.LayoutOptions).run();
+    cy.fit(undefined, 50);
   }, [graph, minEdgeWeight, probabilityMode, ready]);
 
   // Reflect external selection (cleared when filters change).
@@ -198,8 +204,8 @@ export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWe
           {fullscreenSlot}
           <button onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 1.25)} title="Zoom in" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Plus className="w-3.5 h-3.5" /></button>
           <button onClick={() => cyRef.current?.zoom(cyRef.current.zoom() / 1.25)} title="Zoom out" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Minus className="w-3.5 h-3.5" /></button>
-          <button onClick={() => { cyRef.current?.fit(undefined, 30); }} title="Fit to view" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Maximize2 className="w-3.5 h-3.5" /></button>
-          <button onClick={() => cyRef.current?.layout({ name: 'cose', animate: true, idealEdgeLength: 90, nodeOverlap: 24, nodeRepulsion: 9000, gravity: 0.6, padding: 30 } as cytoscape.LayoutOptions).run()} title="Re-run layout" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Crosshair className="w-3.5 h-3.5" /></button>
+          <button onClick={() => { cyRef.current?.fit(undefined, 50); }} title="Fit to view" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Maximize2 className="w-3.5 h-3.5" /></button>
+          <button onClick={() => cyRef.current?.layout({ ...LAYOUT, animate: true } as cytoscape.LayoutOptions).run()} title="Re-run layout" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Crosshair className="w-3.5 h-3.5" /></button>
           <button onClick={() => download('svg')} className="flex items-center gap-1 text-xs border border-slate-200 rounded-lg px-2 py-1.5 hover:bg-slate-50"><Download className="w-3.5 h-3.5" /> SVG</button>
           <button onClick={() => download('png')} className="flex items-center gap-1 text-xs border border-slate-200 rounded-lg px-2 py-1.5 hover:bg-slate-50"><Download className="w-3.5 h-3.5" /> PNG</button>
         </div>

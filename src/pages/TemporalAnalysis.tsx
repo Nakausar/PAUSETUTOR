@@ -9,7 +9,7 @@ import {
   buildStepTokens, discoverSequences, aiOptionFrequency, repeatedAiPerSession,
   type StepToken, type SessionDurations, type SessionIntervals,
 } from '@/lib/temporal/analysis';
-import { buildPhaseNetwork, buildActivityNetwork, buildAiNetwork, supportingTransitions, classifyEvent, type NetworkGraph, type NetworkDataset } from '@/lib/temporal/network';
+import { buildPhaseNetwork, buildAiNetwork, supportingTransitions, classifyEvent, type NetworkGraph, type NetworkDataset } from '@/lib/temporal/network';
 import { AI_CATEGORIES } from '@/lib/constants';
 import { exportAsCSV } from '@/lib/exporter';
 import NetworkGraphView, { type NetworkSelection } from '@/components/NetworkGraphView';
@@ -83,7 +83,7 @@ export default function TemporalAnalysis() {
   const [edgeProbabilityMode, setEdgeProbabilityMode] = useState(false);
   const [showNodeLabels, setShowNodeLabels] = useState(true);
   const [netSelection, setNetSelection] = useState<NetworkSelection | null>(null);
-  const [netSource, setNetSource] = useState<'phase' | 'activity' | 'ai'>('phase');
+  const [netSource, setNetSource] = useState<'phase' | 'ai'>('phase');
   const [aiNetOption, setAiNetOption] = useState<string>('all');
 
   useEffect(() => { void reload(); }, []);
@@ -155,9 +155,8 @@ export default function TemporalAnalysis() {
     const patterns = discoverSequences(tokensBySession, seqMinLen, seqMaxLen, 2);
     const netData: NetworkDataset = { events: scoped.events, interactions: scoped.interactions, scrutiny: scoped.scrutiny };
     const phaseNet = buildPhaseNetwork(netData);
-    const activityNet = buildActivityNetwork(netData);
     const aiNet = buildAiNetwork({ events: scoped.events, interactions: scoped.interactions, scrutiny: scoped.scrutiny, labels: AI_LABELS, optionFilter: aiNetOption === 'all' ? null : aiNetOption });
-    return { eventsBySession, durations, intervals, tokensBySession, transitions, rawTransitionMatrix, patterns, phaseNet, activityNet, aiNet, netData };
+    return { eventsBySession, durations, intervals, tokensBySession, transitions, rawTransitionMatrix, patterns, phaseNet, aiNet, netData };
   }, [scoped, seqMinLen, seqMaxLen, aiNetOption]);
 
   if (loading && !data) return <div className="max-w-7xl mx-auto px-4 py-8 text-slate-400 text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Loading research data...</div>;
@@ -559,14 +558,14 @@ function AiBehaviourTab({ scoped, computed, showRequestDetails, setShowRequestDe
 
 function NetworksTab({ scoped, computed, netSource, setNetSource, minEdgeWeight, setMinEdgeWeight, edgeProbabilityMode, setEdgeProbabilityMode, showNodeLabels, setShowNodeLabels, aiNetOption, setAiNetOption, netSelection, setNetSelection }: {
   scoped: Scoped; computed: Computed;
-  netSource: 'phase' | 'activity' | 'ai'; setNetSource: (v: 'phase' | 'activity' | 'ai') => void;
+  netSource: 'phase' | 'ai'; setNetSource: (v: 'phase' | 'ai') => void;
   minEdgeWeight: number; setMinEdgeWeight: (v: number) => void;
   edgeProbabilityMode: boolean; setEdgeProbabilityMode: (v: boolean) => void;
   showNodeLabels: boolean; setShowNodeLabels: (v: boolean) => void;
   aiNetOption: string; setAiNetOption: (v: string) => void;
   netSelection: NetworkSelection | null; setNetSelection: (s: NetworkSelection | null) => void;
 }) {
-  const net: NetworkGraph = netSource === 'phase' ? computed.phaseNet : netSource === 'activity' ? computed.activityNet : computed.aiNet;
+  const net: NetworkGraph = netSource === 'phase' ? computed.phaseNet : computed.aiNet;
   const emptyMsg = netSource === 'ai' && scoped.interactions.length === 0
     ? 'No AI requests in scope — the AI pathway network is empty by observation, not by error.'
     : net.nodes.length === 0 ? 'No recorded activity in scope for this network.' : null;
@@ -575,7 +574,7 @@ function NetworksTab({ scoped, computed, netSource, setNetSource, minEdgeWeight,
     <Section title="Network Visualisations" subtitle="Force-directed maps of observed activity. Every node is a recorded event category; every arrow an observed chronological transition between consecutive events. Proximity is a layout artefact, not evidence of effectiveness.">
       <div className="flex flex-wrap items-center gap-4 mb-4">
         <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
-          {([['phase', 'Phase Network'], ['activity', 'Activity Network'], ['ai', 'AI Pathway Network']] as const).map(([key, lbl]) => (
+          {([['phase', 'Phase Network'], ['ai', 'AI Pathway Network']] as const).map(([key, lbl]) => (
             <button key={key} onClick={() => { setNetSource(key); setNetSelection(null); }} className={`px-3 py-1.5 font-medium transition-colors ${netSource === key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{lbl}</button>
           ))}
         </div>
@@ -624,7 +623,7 @@ function NetworksTab({ scoped, computed, netSource, setNetSource, minEdgeWeight,
           </div>
         )}
       </div>
-      <p className="text-[11px] text-slate-400 mt-3">Legend — Phase Network: the five PAUSE phases (Plan blue, Attempt green, Use AI orange, Scrutinise purple, Evaluate red; archived Edit shown separately). Activity Network: concrete recorded activities. AI Pathway Network: orange option nodes carry the exact AI option labels stored in the database. Click a node or edge to open the inspector drawer.</p>
+      <p className="text-[11px] text-slate-400 mt-3">Legend — Phase Network: the five PAUSE phases (Plan blue, Attempt green, Use AI orange, Scrutinise purple, Evaluate red). AI Pathway Network: orange option nodes carry the exact AI option labels stored in the database. Click a node or edge to open the inspector drawer.</p>
     </Section>
   );
 }
@@ -841,7 +840,6 @@ interface Computed {
   rawTransitionMatrix: ReturnType<typeof computeTransitionMatrix>;
   patterns: ReturnType<typeof discoverSequences>;
   phaseNet: NetworkGraph;
-  activityNet: NetworkGraph;
   aiNet: NetworkGraph;
   netData: NetworkDataset;
 }
@@ -851,7 +849,7 @@ function NetworkInspector({ net, selection, scoped, computed, netSource, onClose
   selection: NetworkSelection | null;
   scoped: Scoped;
   computed: Computed;
-  netSource: 'phase' | 'activity' | 'ai';
+  netSource: 'phase' | 'ai';
   onClose: () => void;
 }) {
   const node = selection?.type === 'node' ? net.nodes.find((n) => n.id === selection.id) ?? null : null;
@@ -860,7 +858,6 @@ function NetworkInspector({ net, selection, scoped, computed, netSource, onClose
   const labelFor = (id: string) => net.nodes.find((n) => n.id === id)?.label ?? id;
   const resolveUnit = (e: EventLog): string | null => {
     if (netSource === 'phase') return e.pause_phase ?? null;
-    if (netSource === 'activity') return classifyEvent(e);
     return null;
   };
 
