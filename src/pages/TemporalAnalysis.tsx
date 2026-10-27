@@ -1,20 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Clock, Download, RefreshCw, Filter } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip as ReTooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { Clock, Download, RefreshCw, Filter, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, X, Table2 } from 'lucide-react';
 import { loadTemporalDataset, invalidateCache, type TemporalDataset } from '@/lib/temporal/dataService';
+import { auditDataQuality, LONG_GAP_MS, type DataQualityReport } from '@/lib/temporal/dataQuality';
 import {
-  ANALYSIS_VERSION, PHASE_COLORS, PHASE_DISPLAY, fmtDuration,
+  ANALYSIS_VERSION, PHASE_COLORS, PHASE_DISPLAY, fmtDuration, GAP_CAP_MINUTES,
   buildPhaseSequence, computeTransitionMatrix, computeSessionDurations, computeSessionIntervals,
   buildStepTokens, discoverSequences, aiOptionFrequency, repeatedAiPerSession, compareByGradeBand,
   type StepToken, type SessionDurations, type SessionIntervals,
 } from '@/lib/temporal/analysis';
+import { buildPhaseNetwork, buildActivityNetwork, buildAiNetwork, supportingTransitions, classifyEvent, type NetworkGraph, type NetworkDataset } from '@/lib/temporal/network';
 import { AI_CATEGORIES } from '@/lib/constants';
 import { exportAsCSV } from '@/lib/exporter';
 import NetworkGraphView, { type NetworkSelection } from '@/components/NetworkGraphView';
-import { buildPhaseNetwork, buildActivityNetwork, buildAiNetwork, supportingTransitions, classifyEvent, type NetworkGraph, type NetworkDataset } from '@/lib/temporal/network';
 import type { EventLog, Session, AIInteraction, ScrutinyResponse } from '@/lib/types';
-
-interface Scoped { sessions: Session[]; events: EventLog[]; interactions: AIInteraction[]; scrutiny: ScrutinyResponse[]; approved: Map<string, number> }
-interface Computed { durations: Map<string, SessionDurations>; intervals: Map<string, SessionIntervals>; eventsBySession: Map<string, EventLog[]>; netData: NetworkDataset }
 
 const AI_LABELS: Record<string, string> = Object.fromEntries(AI_CATEGORIES.map((c) => [c.key, c.label]));
 
@@ -34,14 +33,37 @@ interface Filters {
 
 const EMPTY_FILTERS: Filters = { participantId: 'all', taskId: 'all', sessionId: 'all', from: '', to: '', aiOption: 'all', gradeMin: '', gradeMax: '' };
 
-function Section({ n, title, subtitle, children }: { n: number; title: string; subtitle: string; children: React.ReactNode }) {
+type TabKey = 'overview' | 'pathways' | 'ai' | 'networks' | 'advanced';
+type AdvancedSub = 'sequences' | 'clustering' | 'process' | 'performance' | 'timing' | 'tables' | 'exports';
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'pathways', label: 'Learning Pathways' },
+  { key: 'ai', label: 'AI Behaviour' },
+  { key: 'networks', label: 'Network Visualisations' },
+  { key: 'advanced', label: 'Advanced Analysis' },
+];
+
+const ADV_SUBS: { key: AdvancedSub; label: string }[] = [
+  { key: 'sequences', label: 'Frequent Sequences' },
+  { key: 'clustering', label: 'Sequence Clustering' },
+  { key: 'process', label: 'Process Mining' },
+  { key: 'performance', label: 'Pathway & Performance' },
+  { key: 'timing', label: 'Timing & Help-Seeking' },
+  { key: 'tables', label: 'Advanced Tables' },
+  { key: 'exports', label: 'Data Exports' },
+];
+
+const PATHWAYS_PAGE_SIZE = 15;
+
+function Section({ title, subtitle, children, actions }: { title: string; subtitle?: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <section className="bg-white border border-slate-200 rounded-xl p-5">
-      <div className="flex items-baseline gap-2 mb-1">
-        <span className="text-xs font-bold text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-0.5">{n}</span>
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-1">
         <h2 className="text-base font-bold text-navy-900">{title}</h2>
+        {actions}
       </div>
-      <p className="text-xs text-slate-500 mb-4">{subtitle}</p>
+      {subtitle && <p className="text-xs text-slate-500 mb-4">{subtitle}</p>}
       {children}
     </section>
   );
@@ -60,15 +82,23 @@ export default function TemporalAnalysis() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [tab, setTab] = useState<TabKey>('overview');
+  const [advSub, setAdvSub] = useState<AdvancedSub>('sequences');
+  const [dqOpen, setDqOpen] = useState(false);
   const [minFreq, setMinFreq] = useState(2);
   const [seqMinLen, setSeqMinLen] = useState(2);
   const [seqMaxLen, setSeqMaxLen] = useState(4);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [pathwaysPage, setPathwaysPage] = useState(0);
+  const [showRequestDetails, setShowRequestDetails] = useState(false);
+  const [showRepeated, setShowRepeated] = useState(false);
   const [minEdgeWeight, setMinEdgeWeight] = useState(1);
   const [edgeProbabilityMode, setEdgeProbabilityMode] = useState(false);
+  const [showNodeLabels, setShowNodeLabels] = useState(true);
   const [netSelection, setNetSelection] = useState<NetworkSelection | null>(null);
   const [netSource, setNetSource] = useState<'phase' | 'activity' | 'ai'>('phase');
   const [aiNetOption, setAiNetOption] = useState<string>('all');
+  const [timingSort, setTimingSort] = useState<{ key: string; asc: boolean }>({ key: 'participant', asc: true });
 
   useEffect(() => { void reload(); }, []);
   async function reload() {
@@ -113,6 +143,11 @@ export default function TemporalAnalysis() {
     return { sessions, events, interactions, scrutiny, approved };
   }, [data, filters]);
 
+  const dq = useMemo(() => {
+    if (!data || !scoped) return null;
+    return auditDataQuality(data.events, data.aiInteractions, data.scrutiny, scoped.sessions, data.assessments);
+  }, [data, scoped]);
+
   const computed = useMemo(() => {
     if (!scoped) return null;
     const eventsBySession = new Map<string, EventLog[]>();
@@ -145,25 +180,28 @@ export default function TemporalAnalysis() {
   const participants = Array.from(new Set((data?.sessions ?? []).map((s) => s.participant_id))).sort();
   const allSessions = data?.sessions ?? [];
 
+  function clickAiOption(option: string) {
+    setFilters((f) => ({ ...f, aiOption: f.aiOption === option ? 'all' : option }));
+  }
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-navy-900 flex items-center gap-2"><Clock className="w-6 h-6 text-blue-600" /> Temporal Learning Analysis</h1>
           <p className="text-sm text-slate-500 mt-1">Explore learning pathways, AI assistance choices, phase transitions, and temporal patterns in programming education.</p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[11px] text-slate-400">analysis v{ANALYSIS_VERSION}{data ? ` · loaded ${new Date(data.fetchedAt).toLocaleTimeString()}` : ''}</span>
-          <button onClick={refresh} disabled={loading} className="flex items-center gap-1.5 text-sm border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50 disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh Analysis</button>
+          {dq && <DataQualityPill report={dq} open={dqOpen} onToggle={() => setDqOpen(!dqOpen)} />}
+          <span className="text-[11px] text-slate-400 hidden lg:inline">v{ANALYSIS_VERSION}{data ? ` · ${new Date(data.fetchedAt).toLocaleTimeString()}` : ''}</span>
+          <button onClick={refresh} disabled={loading} className="flex items-center gap-1.5 text-sm border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50 disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh</button>
         </div>
       </div>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 text-sm text-red-700 p-3">{error}</div>}
-      {data && data.duplicateEventsRemoved > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 text-xs text-amber-700 p-3">{data.duplicateEventsRemoved} duplicate log entries (same session, type and description within 2 seconds) were suppressed so transition counts are not inflated. Raw exports retain every record.</div>
-      )}
+      {dqOpen && dq && <DataQualityPanel report={dq} onClose={() => setDqOpen(false)} />}
 
-      {/* Filters */}
+      {/* Filters — shared across tabs */}
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex items-center gap-2 mb-3 text-sm font-semibold text-slate-900"><Filter className="w-4 h-4 text-slate-400" /> Filters</div>
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
@@ -205,311 +243,609 @@ export default function TemporalAnalysis() {
           </label>
         </div>
         <div className="flex items-center justify-between mt-3">
-          <button onClick={() => { setFilters(EMPTY_FILTERS); setNetSelection(null); }} className="text-xs text-slate-500 hover:text-slate-900 underline">Clear filters</button>
+          <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-xs text-slate-500 hover:text-slate-900 underline">Clear filters</button>
           {scoped && <span className="text-xs text-slate-400">{scoped.sessions.length} sessions · {scoped.events.length} events · {scoped.interactions.length} AI requests in scope</span>}
         </div>
       </div>
 
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-1 border-b border-slate-200">
+        {TABS.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)} className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === t.key ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>{t.label}</button>
+        ))}
+      </div>
+
       {!scoped || !computed ? null : (
         <>
-          {/* ---------- 1. Learning Pathways ---------- */}
-          <Section n={1} title="Learning Pathways" subtitle="Chronological phase sequence per session, reconstructed from actual event records. Historical 'edit' events from the previous six-phase framework are preserved as their own node.">
-            <div className="flex flex-wrap gap-3 mb-3">
-              {['plan', 'attempt', 'use_ai', 'scrutinise', 'edit', 'evaluate'].map((p) => (
-                <span key={p} className="flex items-center gap-1.5 text-xs text-slate-600"><span className="w-3 h-3 rounded" style={{ backgroundColor: PHASE_COLORS[p] }} />{PHASE_DISPLAY[p]}</span>
-              ))}
-            </div>
-            {scoped.sessions.length === 0 ? <EmptyState>No sessions match the current filters.</EmptyState> : (
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {scoped.sessions.slice(0, 40).map((s) => {
-                  const steps = buildPhaseSequence(computed.eventsBySession.get(s.id) ?? [], s.completed_at);
-                  return (
-                    <button key={s.id} onClick={() => setSelectedSession(selectedSession === s.id ? null : s.id)} className={`w-full text-left border rounded-lg px-3 py-2 hover:border-blue-300 transition-colors ${selectedSession === s.id ? 'border-blue-400 bg-blue-50/40' : 'border-slate-200'}`}>
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-mono font-medium text-slate-700">{s.participant_id}</span>
-                        <span className="text-slate-400">{tasks.find((t) => t.id === s.task_id)?.title ?? 'Task'} · {steps.length} phase visit{steps.length === 1 ? '' : 's'}{s.status === 'completed' ? ' · completed' : ''}</span>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                        {steps.length === 0 ? <span className="text-xs text-slate-400">No phase events recorded</span> : steps.map((st, i) => (
-                          <span key={i} className="flex items-center gap-1">
-                            {i > 0 && <span className="text-slate-300">→</span>}
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white" style={{ backgroundColor: PHASE_COLORS[st.phase] }}>{PHASE_DISPLAY[st.phase]}</span>
-                          </span>
-                        ))}
-                      </div>
-                    </button>
-                  );
-                })}
-                {scoped.sessions.length > 40 && <p className="text-xs text-slate-400">Showing the first 40 sessions — refine filters to see others.</p>}
-              </div>
-            )}
-            {selectedSession && <SessionDetail session={scoped.sessions.find((s) => s.id === selectedSession)!} events={computed.eventsBySession.get(selectedSession) ?? []} interactions={scoped.interactions} scrutiny={scoped.scrutiny} durations={computed.durations.get(selectedSession) ?? null} intervals={computed.intervals.get(selectedSession) ?? null} />}
-          </Section>
-
-          {/* ---------- 2. AI Assistance Behaviour ---------- */}
-          <Section n={2} title="AI Assistance Behaviour" subtitle="Exactly which AI assistance option each student selected, when, and what happened next. Options are the seven built into the Use AI phase.">
-            {scoped.interactions.length === 0 ? <EmptyState>No AI requests in scope. Students who never use AI are shown here as an empty result — that is a valid outcome, not missing data.</EmptyState> : (
-              <div className="space-y-5">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">A. AI option frequency</h3>
-                  <table className="text-xs w-full max-w-2xl">
-                    <thead className="text-slate-500"><tr><Th>AI assistance option</Th><Th right>Requests</Th><Th right>Students</Th><Th right>% of requests</Th></tr></thead>
-                    <tbody>
-                      {aiOptionFrequency(scoped.interactions, AI_LABELS).map((r) => (
-                        <tr key={r.category}><td className="py-1.5 px-2 text-slate-700">{r.label}</td><td className="py-1.5 px-2 text-right font-mono">{r.requests}</td><td className="py-1.5 px-2 text-right font-mono">{r.students}</td><td className="py-1.5 px-2 text-right font-mono">{r.pctOfRequests.toFixed(1)}%</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">B. Request detail and follow-up activity</h3>
-                  <div className="overflow-x-auto">
-                    <table className="text-xs w-full">
-                      <thead className="text-slate-500"><tr><Th>Student</Th><Th>Option</Th><Th>Requested</Th><Th>Prompt</Th><Th>Scrutinised</Th><Th>Request → scrutiny</Th><Th>Scrutiny → code</Th></tr></thead>
-                      <tbody>
-                        {scoped.interactions.slice(0, 50).map((i) => {
-                          const sc = scoped.scrutiny.filter((s) => s.ai_interaction_id === i.id).sort((a, b) => a.created_at.localeCompare(b.created_at))[0] ?? null;
-                          const sessionEvents = (computed.eventsBySession.get(i.session_id) ?? []).filter((e) => new Date(e.timestamp).getTime() >= new Date(i.created_at).getTime() && (e.event_type === 'CODE_RUN' || e.event_type === 'CODE_REVISED'));
-                          const nextCode = sessionEvents[0]?.timestamp ?? null;
-                          const gap1 = sc ? new Date(sc.created_at).getTime() - new Date(i.created_at).getTime() : null;
-                          const gap2 = sc && nextCode ? new Date(nextCode).getTime() - new Date(sc.created_at).getTime() : null;
-                          return (
-                            <tr key={i.id}>
-                              <td className="py-1.5 px-2 font-mono">{i.participant_id}</td>
-                              <td className="py-1.5 px-2 text-slate-700 whitespace-nowrap">{AI_LABELS[i.category] ?? i.category}</td>
-                              <td className="py-1.5 px-2 whitespace-nowrap text-slate-500">{new Date(i.created_at).toLocaleString()}</td>
-                              <td className="py-1.5 px-2 max-w-52 truncate text-slate-500" title={i.prompt}>{i.prompt.slice(0, 80) || '—'}</td>
-                              <td className="py-1.5 px-2">{sc ? <span className="text-emerald-600">yes</span> : <span className="text-slate-300">no</span>}</td>
-                              <td className="py-1.5 px-2 font-mono">{fmtDuration(gap1)}</td>
-                              <td className="py-1.5 px-2 font-mono">{fmtDuration(gap2)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {scoped.interactions.length > 50 && <p className="text-xs text-slate-400 mt-2">Showing the first 50 requests — export for the full set.</p>}
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">C. Repeated AI assistance</h3>
-                  <table className="text-xs w-full max-w-3xl">
-                    <thead className="text-slate-500"><tr><Th>Student</Th><Th right>Requests</Th><Th right>Distinct options</Th><Th>Repeated option</Th><Th right>Scrutiny cycles</Th></tr></thead>
-                    <tbody>
-                      {repeatedAiPerSession(scoped.interactions, scoped.scrutiny, AI_LABELS).slice(0, 20).map((r) => (
-                        <tr key={r.sessionId}><td className="py-1.5 px-2 font-mono">{r.participantId}</td><td className="py-1.5 px-2 text-right font-mono">{r.totalRequests}</td><td className="py-1.5 px-2 text-right font-mono">{r.optionsUsed}</td><td className="py-1.5 px-2">{r.repeatedOption ? `${r.repeatedOption} ×${r.repeatedOptionCount}` : '—'}</td><td className="py-1.5 px-2 text-right font-mono">{r.scrutinyCycles}</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </Section>
-
-          {/* ---------- 3. Phase Transitions ---------- */}
-          <Section n={3} title="Phase Transitions" subtitle="Movement between PAUSE phases, from PHASE_ENTERED/PHASE_EXITED/PHASE_TRANSITION records. Duplicate log entries are suppressed; backward moves are expected under flexible navigation.">
-            {computed.transitions.rowTotals.every((t) => t === 0) ? <EmptyState>No phase transitions recorded in scope.</EmptyState> : (
-              <div className="grid lg:grid-cols-2 gap-5">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">Transition frequency</h3>
-                  <TransitionTable phases={computed.transitions.phases} counts={computed.transitions.counts} rowTotals={computed.transitions.rowTotals} />
-                  <p className="text-xs text-slate-500 mt-2">Forward movements: {computed.transitions.forward} · Backward movements: {computed.transitions.backward}</p>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">Transition probability (row-normalised)</h3>
-                  <TransitionTable phases={computed.transitions.phases} counts={computed.transitions.probabilities.map((r) => r.map((v) => Math.round(v * 100)))} rowTotals={null} percent />
-                  <div className="mt-3">
-                    <h3 className="text-sm font-semibold text-slate-700 mb-1.5">Diagram (edges ≥ 10% of row)</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {computed.transitions.phases.flatMap((a, ai2) => computed.transitions.phases.map((b, bi2) => ({ a, b, p: computed.transitions.probabilities[ai2][bi2] })))
-                        .filter(({ a, b, p }) => a !== b && p >= 0.1 && computed.transitions.rowTotals[computed.transitions.phases.indexOf(a)] > 0)
-                        .sort((x, y) => y.p - x.p).slice(0, 12)
-                        .map(({ a, b, p }, k) => (
-                          <span key={k} className="text-[11px] border border-slate-200 rounded px-2 py-1"><span style={{ color: PHASE_COLORS[a] }}>{PHASE_DISPLAY[a]}</span> → <span style={{ color: PHASE_COLORS[b] }}>{PHASE_DISPLAY[b]}</span> <span className="font-mono text-slate-500">{Math.round(p * 100)}%</span></span>
-                        ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </Section>
-
-          {/* ---------- 4. Timing and Help-Seeking ---------- */}
-          <Section n={4} title="Timing and Help-Seeking" subtitle="Temporal intervals computed from record timestamps. Times are observed elapsed (wall-clock) time; active estimates cap each silent gap at 5 minutes. Missing timestamps are excluded, never estimated.">
-            {scoped.sessions.length === 0 ? <EmptyState>No sessions in scope.</EmptyState> : (
-              <div className="space-y-4">
-                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {(() => {
-                    const durs = scoped.sessions.map((s) => computed.durations.get(s.id)).filter(Boolean) as SessionDurations[];
-                    const ivs = scoped.sessions.map((s) => computed.intervals.get(s.id)).filter(Boolean) as SessionIntervals[];
-                    const sum = (arr: number[]) => arr.reduce((s2, v) => s2 + v, 0);
-                    const allFirstAi = ivs.map((i) => i.firstCodeToFirstAiMs).filter((v): v is number => v !== null && v >= 0);
-                    return (
-                      <>
-                        <MetricCard label="Sessions with recorded activity" value={String(durs.length)} />
-                        <MetricCard label="Total observed time" value={fmtDuration(sum(durs.map((d) => d.observedMs ?? 0)) || null)} />
-                        <MetricCard label="Total estimated active time" value={fmtDuration(sum(durs.map((d) => d.activeMs)) || null)} />
-                        <MetricCard label="Median time to first AI request (after first code)" value={fmtDuration(medianOf(allFirstAi))} />
-                      </>
-                    );
-                  })()}
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="text-xs w-full">
-                    <thead className="text-slate-500"><tr>
-                      <Th>Student</Th><Th>Session</Th><Th right>Plan → first code</Th><Th right>First code → first AI</Th><Th right>AI requests</Th><Th right>Median gap between AI requests</Th><Th right>Median request → scrutiny</Th><Th right>Median scrutiny → code</Th><Th right>Observed duration</Th><Th right>Estimated active</Th>
-                    </tr></thead>
-                    <tbody>
-                      {scoped.sessions.slice(0, 30).map((s) => {
-                        const d = computed.durations.get(s.id);
-                        const iv = computed.intervals.get(s.id);
-                        const med = (arr: number[]) => (arr.length ? medianOf(arr) : null);
-                        return (
-                          <tr key={s.id}>
-                            <td className="py-1.5 px-2 font-mono">{s.participant_id}</td>
-                            <td className="py-1.5 px-2 font-mono text-slate-400">{s.id.slice(0, 8)}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(iv?.planToFirstCodeMs ?? null)}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(iv?.firstCodeToFirstAiMs ?? null)}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{iv?.aiRequestCount ?? 0}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(med(iv?.aiRequestGapsMs ?? []))}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(med(iv?.scrutinyAfterRequestMs ?? []))}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(med(iv?.codeAfterScrutinyMs ?? []))}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(d?.observedMs ?? null)}</td>
-                            <td className="py-1.5 px-2 text-right font-mono">{d ? fmtDuration(d.activeMs) : '—'}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="text-[11px] text-slate-400">A student who never requested AI shows "—" for AI columns; that is a genuine outcome, not missing data. Page-open time is never assumed to be engagement.</p>
-              </div>
-            )}
-          </Section>
-
-          {/* ---------- 5. Temporal Patterns and Performance ---------- */}
-          <Section n={5} title="Temporal Patterns and Performance" subtitle="Frequent step sequences (descriptive n-gram counts over session pathways) and their relation to approved grades. Descriptive only — no statistical significance is asserted.">
-            <div className="flex flex-wrap items-end gap-4 mb-4">
-              <label className="text-xs text-slate-500">Min sequence length
-                <input type="number" min={2} max={8} value={seqMinLen} onChange={(e) => setSeqMinLen(Math.max(2, Number(e.target.value)))} className="mt-1 w-20 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-              </label>
-              <label className="text-xs text-slate-500">Max sequence length
-                <input type="number" min={2} max={8} value={seqMaxLen} onChange={(e) => setSeqMaxLen(Math.min(8, Number(e.target.value)))} className="mt-1 w-20 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-              </label>
-              <label className="text-xs text-slate-500">Minimum frequency
-                <input type="number" min={1} max={50} value={minFreq} onChange={(e) => setMinFreq(Math.max(1, Number(e.target.value)))} className="mt-1 w-20 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" />
-              </label>
-              <span className="text-[11px] text-slate-400">Steps: {Object.entries(STEP_LABELS).map(([k, v]) => <span key={k} className="mr-2" style={{ color: STEP_COLORS[k as StepToken] }}>{v}</span>)}</span>
-            </div>
-            <div className="grid lg:grid-cols-2 gap-5">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-700 mb-2">Frequent sequences</h3>
-                {computed.patterns.length === 0 ? <EmptyState>No sequences reach the current minimum frequency. Lower the threshold or widen the filters.</EmptyState> : (
-                  <table className="text-xs w-full">
-                    <thead className="text-slate-500"><tr><Th>Sequence</Th><Th right>Count</Th><Th right>Students</Th><Th right>Sessions</Th></tr></thead>
-                    <tbody>
-                      {computed.patterns.slice(0, 15).map((p) => (
-                        <tr key={p.sequence}><td className="py-1.5 px-2 text-slate-700">{p.sequence}</td><td className="py-1.5 px-2 text-right font-mono">{p.count}</td><td className="py-1.5 px-2 text-right font-mono">{p.participants}</td><td className="py-1.5 px-2 text-right font-mono">{p.sessions}</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-700 mb-2">Temporal metrics by approved grade band</h3>
-                <table className="text-xs w-full">
-                  <thead className="text-slate-500"><tr><Th>Approved grade band</Th><Th right>Sessions</Th><Th right>Students</Th><Th right>Avg AI requests</Th><Th right>Avg scrutiny cycles</Th><Th right>Avg active min</Th><Th right>Median min to first AI</Th></tr></thead>
-                  <tbody>
-                    {computed.bandComparison.rows.map((r) => (
-                      <tr key={r.band}>
-                        <td className="py-1.5 px-2 text-slate-700">{r.band}</td><td className="py-1.5 px-2 text-right font-mono">{r.sessions}</td><td className="py-1.5 px-2 text-right font-mono">{r.participants}</td>
-                        <td className="py-1.5 px-2 text-right font-mono">{r.avgAiRequests !== null ? r.avgAiRequests.toFixed(1) : '—'}</td>
-                        <td className="py-1.5 px-2 text-right font-mono">{r.avgScrutinyCycles !== null ? r.avgScrutinyCycles.toFixed(1) : '—'}</td>
-                        <td className="py-1.5 px-2 text-right font-mono">{r.avgActiveMinutes !== null ? r.avgActiveMinutes.toFixed(1) : '—'}</td>
-                        <td className="py-1.5 px-2 text-right font-mono">{r.medianMinutesToFirstAi !== null ? r.medianMinutesToFirstAi.toFixed(1) : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <p className="text-[11px] text-slate-400 mt-2">Based on {computed.bandComparison.gradedCount} graded and {computed.bandComparison.ungradedCount} ungraded sessions. Only researcher-approved marks are used; ungraded work is excluded, never counted as zero. AI draft marks are never used. No causal claim is made or implied.</p>
-              </div>
-            </div>
-          </Section>
-
-          {/* ---------- 6. Interactive Networks ---------- */}
-          <Section n={6} title="Interactive Learning Networks" subtitle="Force-directed maps of observed activity. Every node is a recorded event category, every arrow an observed chronological transition between consecutive events in a session. Network proximity is a layout artefact, not evidence of learning effectiveness.">
-            <div className="flex flex-wrap items-center gap-4 mb-4">
-              <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
-                {([['phase', 'Phase network'], ['activity', 'Activity network'], ['ai', 'AI pathway network']] as const).map(([key, lbl]) => (
-                  <button key={key} onClick={() => { setNetSource(key); setNetSelection(null); }} className={`px-3 py-1.5 font-medium transition-colors ${netSource === key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{lbl}</button>
+          {tab === 'overview' && <OverviewTab scoped={scoped} computed={computed} onGoTo={(t) => setTab(t)} />}
+          {tab === 'pathways' && <PathwaysTab scoped={scoped} computed={computed} tasks={tasks} selectedSession={selectedSession} setSelectedSession={setSelectedSession} page={pathwaysPage} setPage={setPathwaysPage} filters={filters} clickAiOption={clickAiOption} />}
+          {tab === 'ai' && <AiBehaviourTab scoped={scoped} computed={computed} showRequestDetails={showRequestDetails} setShowRequestDetails={setShowRequestDetails} showRepeated={showRepeated} setShowRepeated={setShowRepeated} clickAiOption={clickAiOption} activeOption={filters.aiOption} />}
+          {tab === 'networks' && <NetworksTab scoped={scoped} computed={computed} netSource={netSource} setNetSource={setNetSource} minEdgeWeight={minEdgeWeight} setMinEdgeWeight={setMinEdgeWeight} edgeProbabilityMode={edgeProbabilityMode} setEdgeProbabilityMode={setEdgeProbabilityMode} showNodeLabels={showNodeLabels} setShowNodeLabels={setShowNodeLabels} aiNetOption={aiNetOption} setAiNetOption={setAiNetOption} netSelection={netSelection} setNetSelection={setNetSelection} />}
+          {tab === 'advanced' && (
+            <section className="space-y-4">
+              <div className="flex flex-wrap gap-1">
+                {ADV_SUBS.map((s) => (
+                  <button key={s.key} onClick={() => setAdvSub(s.key)} className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${advSub === s.key ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{s.label}</button>
                 ))}
               </div>
-              <label className="text-xs text-slate-500">Min edge weight
-                <input type="number" min={1} max={50} value={minEdgeWeight} onChange={(e) => setMinEdgeWeight(Math.max(1, Number(e.target.value)))} className="ml-2 w-16 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-slate-500">
-                <input type="checkbox" checked={edgeProbabilityMode} onChange={(e) => setEdgeProbabilityMode(e.target.checked)} className="rounded" />
-                Show normalised probabilities instead of raw counts
-              </label>
-              {netSource === 'ai' && (
-                <label className="text-xs text-slate-500">Inspect AI option
-                  <select value={aiNetOption} onChange={(e) => { setAiNetOption(e.target.value); setNetSelection(null); }} className="ml-2 border border-slate-300 rounded-lg px-2 py-1 text-sm">
-                    <option value="all">All options</option>
-                    {AI_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-                  </select>
-                </label>
-              )}
-            </div>
-            {(() => {
-              const net: NetworkGraph = netSource === 'phase' ? computed.phaseNet : netSource === 'activity' ? computed.activityNet : computed.aiNet;
-              const emptyMsg = netSource === 'ai' && scoped.interactions.length === 0
-                ? 'No AI requests in scope. Sessions without AI assistance are a valid outcome — the AI pathway network is empty by observation, not by error.'
-                : net.nodes.length === 0 ? 'No recorded activity in scope for this network.' : null;
-              if (emptyMsg) return <EmptyState>{emptyMsg}</EmptyState>;
-              return (
-                <div className="grid lg:grid-cols-3 gap-4">
-                  <div className="lg:col-span-2">
-                    <NetworkGraphView
-                      graph={net}
-                      selection={netSelection}
-                      onSelect={setNetSelection}
-                      minEdgeWeight={minEdgeWeight}
-                      probabilityMode={edgeProbabilityMode}
-                      filename={`temporal_${netSource}_network`}
-                    />
-                  </div>
-                  <NetworkInspector
-                    net={net}
-                    selection={netSelection}
-                    scoped={scoped}
-                    computed={computed}
-                    netSource={netSource}
-                    onClose={() => setNetSelection(null)}
-                  />
-                </div>
-              );
-            })()}
-            <p className="text-[11px] text-slate-400 mt-3">Legend — phase network: nodes are the five PAUSE phases (Plan blue, Attempt green, Use AI orange, Scrutinise purple, Evaluate red; archived Edit shown separately). Activity network: nodes are concrete recorded activities. AI pathway network: orange option nodes carry the exact AI assistance labels stored in the database. Edge labels show the raw transition count or row-normalised probability. Frequencies and counts here are computed from the same event set as the tables above, so the network and table views agree under identical filters.</p>
-          </Section>
-
-          {/* ---------- Exports ---------- */}
-          <Section n={0} title="Research Data Exports" subtitle={`CSV exports matching the current filters. Analysis version ${ANALYSIS_VERSION}; exported ${new Date().toISOString().slice(0, 10)}. See the data dictionary note below for field definitions.`}>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <ExportCard label="Raw event records" desc="Timestamped events with stable ids, participant, task, session, phase and type" onClick={() => exportAsCSV(scoped.events.map(toRawEventRow), 'temporal_raw_events')} />
-              <ExportCard label="Learning sequences" desc="Ordered phase steps per session with event counts and spans" onClick={() => exportAsCSV(exportSequences(scoped, computed.eventsBySession), 'temporal_learning_sequences')} />
-              <ExportCard label="AI option selections" desc="Every AI request with option id, label, timestamps and scrutiny linkage" onClick={() => exportAsCSV(exportAiSelections(scoped), 'temporal_ai_option_selections')} />
-              <ExportCard label="Phase transition frequencies" desc="from → to counts and row probabilities" onClick={() => { const t = computed.transitions; exportAsCSV(t.phases.flatMap((a, ai2) => t.phases.map((b, bi2) => ({ from_phase: a, to_phase: b, count: t.counts[ai2][bi2], row_probability: t.probabilities[ai2][bi2].toFixed(4) }))).filter((r: { count: number }) => r.count > 0), 'temporal_phase_transitions'); }} />
-              <ExportCard label="Temporal duration metrics" desc="Observed vs estimated active time per session and phase" onClick={() => exportAsCSV(exportDurations(scoped.sessions, computed.durations), 'temporal_durations')} />
-              <ExportCard label="Frequent sequence counts" desc="Discovered n-grams with frequency controls applied" onClick={() => exportAsCSV(computed.patterns.map((p) => ({ sequence: p.sequence, length: p.length, count: p.count, participants: p.participants, sessions: p.sessions })), 'temporal_sequence_patterns')} />
-              <ExportCard label="Participant temporal summaries" desc="Per participant: sessions, AI requests, scrutiny cycles, observed and active time" onClick={() => exportAsCSV(exportParticipantSummaries(scoped, computed), 'temporal_participant_summaries')} />
-              <ExportCard label="Grades linked to temporal metrics" desc="Approved marks joined with temporal intervals per session" onClick={() => exportAsCSV(exportGradesLinked(scoped, computed), 'temporal_grades_linked')} />
-            </div>
-            <p className="text-[11px] text-slate-400 mt-3">Data dictionary — event rows: id, participant_id, task_id, session_id, timestamp, pause_phase (raw label, including historical 'edit'), event_type, description; sequence rows: session_id, participant_id, step_index, phase, step_start, step_end, event_count; AI rows: interaction id, category (option id), option_label, prompt, created_at, scrutinised, seconds_to_scrutiny, seconds_scrutiny_to_code; duration rows: session_id, phase, observed_ms, active_ms (gaps &gt; 5 min capped at 5 min); participant rows: participant_id, session_count, ai_requests, scrutiny_cycles, observed_ms, active_ms; grade rows: session_id, participant_id, approved_mark, band, ai_request_count, scrutiny_cycles, minutes_to_first_ai. Deduplication note: analysis uses near-identical-entry suppression (≤ 2 s); raw exports keep every stored record. Historical compatibility: the 'edit' phase from the earlier six-phase framework is kept as a separate sequence node and label in all outputs; it is never merged into 'scrutinise'.</p>
-          </Section>
+              {advSub === 'sequences' && <SequencesSub computed={computed} minFreq={minFreq} setMinFreq={setMinFreq} seqMinLen={seqMinLen} setSeqMinLen={setSeqMinLen} seqMaxLen={seqMaxLen} setSeqMaxLen={setSeqMaxLen} />}
+              {advSub === 'clustering' && <NotImplementedSub title="Sequence Clustering" description="Cluster-based grouping of learning pathways (e.g. k-medoids or hierarchical clustering over sequence distance matrices) is not yet implemented. No synthetic clusters are shown." />}
+              {advSub === 'process' && <NotImplementedSub title="Process Mining" description="Formal process-mining discovery (e.g. alpha/heuristics miner petri-net induction) is not yet implemented. The Frequent Sequences and Network views provide descriptive approximations only." />}
+              {advSub === 'performance' && <PerformanceSub scoped={scoped} computed={computed} />}
+              {advSub === 'timing' && <TimingSub scoped={scoped} computed={computed} sort={timingSort} setSort={setTimingSort} />}
+              {advSub === 'tables' && <TransitionTablesSub computed={computed} />}
+              {advSub === 'exports' && <ExportsSub scoped={scoped} computed={computed} />}
+            </section>
+          )}
         </>
       )}
     </div>
   );
 }
+
+/* ================= Overview ================= */
+
+function OverviewTab({ scoped, computed, onGoTo }: { scoped: Scoped; computed: Computed; onGoTo: (t: TabKey) => void }) {
+  const completed = scoped.sessions.filter((s) => s.status === 'completed').length;
+  const participantCount = new Set(scoped.sessions.map((s) => s.participant_id)).size;
+  const activityCounts = new Map<string, number>();
+  for (const e of scoped.events) {
+    const u = classifyEvent(e);
+    if (u) activityCounts.set(u, (activityCounts.get(u) ?? 0) + 1);
+  }
+  activityCounts.set('AI_REQ', (activityCounts.get('AI_REQ') ?? 0) + scoped.interactions.length);
+  activityCounts.set('SCRUTINY', (activityCounts.get('SCRUTINY') ?? 0) + scoped.scrutiny.filter((s) => !scoped.events.some((e) => classifyEvent(e) === 'SCRUTINY' && e.session_id === s.session_id && e.timestamp === s.created_at)).length);
+  const activityData = Array.from(activityCounts.entries()).map(([k, n]) => ({ name: STEP_LABELS[k as StepToken] ?? k, count: n, color: STEP_COLORS[k as StepToken] ?? '#64748B' })).filter((d) => d.count > 0).sort((a, b) => b.count - a.count);
+  const topTransitions = computed.transitions.phases.flatMap((a, i) => computed.transitions.phases.map((b, j) => ({ label: `${PHASE_DISPLAY[a]} → ${PHASE_DISPLAY[b]}`, count: computed.transitions.counts[i][j], color: PHASE_COLORS[a] })))
+    .filter((t) => t.count > 0).sort((a, b) => b.count - a.count).slice(0, 8);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <MetricCard label="Participants" value={String(participantCount)} />
+        <MetricCard label="Sessions" value={String(scoped.sessions.length)} />
+        <MetricCard label="Completed" value={String(completed)} />
+        <MetricCard label="Recorded events" value={String(scoped.events.length)} />
+        <MetricCard label="AI requests" value={String(scoped.interactions.length)} />
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Section title="Recorded learning activities" subtitle="Counts of each activity type across all events in scope.">
+          {activityData.length === 0 ? <EmptyState>No recorded activities in scope.</EmptyState> : (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={activityData} layout="vertical" margin={{ left: 10, right: 20, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
+                  <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11, fill: '#334155' }} />
+                  <ReTooltip wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="count" fill="#2563eb" radius={[0, 4, 4, 0]} barSize={16} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Section>
+        <Section title="Most frequent phase transitions" subtitle="Top observed phase-to-phase movements across sessions.">
+          {topTransitions.length === 0 ? <EmptyState>No phase transitions recorded in scope.</EmptyState> : (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topTransitions} layout="vertical" margin={{ left: 10, right: 20, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
+                  <YAxis type="category" dataKey="label" width={190} tick={{ fontSize: 11, fill: '#334155' }} />
+                  <ReTooltip wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={16}>
+                    {topTransitions.map((t, i) => <Bar key={i} dataKey="count" fill={t.color} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Section>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <button onClick={() => onGoTo('pathways')} className="text-sm text-blue-600 hover:text-blue-800 underline">Explore learning pathways →</button>
+        <button onClick={() => onGoTo('networks')} className="text-sm text-blue-600 hover:text-blue-800 underline">Open network visualisations →</button>
+        <button onClick={() => onGoTo('advanced')} className="text-sm text-blue-600 hover:text-blue-800 underline">Advanced analysis →</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= Learning Pathways ================= */
+
+function PathwaysTab({ scoped, computed, tasks, selectedSession, setSelectedSession, page, setPage, filters, clickAiOption }: {
+  scoped: Scoped; computed: Computed; tasks: { id: string; title: string }[];
+  selectedSession: string | null; setSelectedSession: (id: string | null) => void;
+  page: number; setPage: (p: number) => void; filters: Filters; clickAiOption: (o: string) => void;
+}) {
+  const pageCount = Math.max(1, Math.ceil(scoped.sessions.length / PATHWAYS_PAGE_SIZE));
+  const pageSessions = scoped.sessions.slice(page * PATHWAYS_PAGE_SIZE, (page + 1) * PATHWAYS_PAGE_SIZE);
+
+  return (
+    <Section title="Learning Pathways" subtitle="One compact row per session. Repeated consecutive phase visits collapse into a single badge with a repeat count; legitimate revisits remain visible. Archived Edit events appear inside their historical context. Click Expand Details for full event-level data.">
+      <div className="flex flex-wrap gap-3 mb-3">
+        {['plan', 'attempt', 'use_ai', 'scrutinise', 'evaluate', 'edit'].map((p) => (
+          <span key={p} className="flex items-center gap-1.5 text-xs text-slate-600"><span className="w-3 h-3 rounded" style={{ backgroundColor: PHASE_COLORS[p] }} />{PHASE_DISPLAY[p]}</span>
+        ))}
+      </div>
+      {scoped.sessions.length === 0 ? <EmptyState>No sessions match the current filters.</EmptyState> : (
+        <div className="space-y-1.5">
+          {pageSessions.map((s) => {
+            const steps = buildPhaseSequence(computed.eventsBySession.get(s.id) ?? [], s.completed_at);
+            const aiOpts = Array.from(new Set(scoped.interactions.filter((i) => i.session_id === s.id).map((i) => i.category)));
+            const expanded = selectedSession === s.id;
+            return (
+              <div key={s.id} className="border border-slate-200 rounded-lg">
+                <button onClick={() => setSelectedSession(expanded ? null : s.id)} className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${expanded ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    <span className="font-mono font-medium text-slate-800 w-20 shrink-0">{s.participant_id}</span>
+                    <span className="text-slate-500 max-w-52 truncate">{tasks.find((t) => t.id === s.task_id)?.title ?? 'Task'}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : s.status === 'in_progress' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{s.status.replace('_', ' ')}</span>
+                    <span className="text-slate-300">|</span>
+                    <span className="flex flex-wrap items-center gap-1">
+                      {steps.length === 0 ? <span className="text-slate-400">No phase events</span> : steps.map((st, i) => (
+                        <span key={i} className="flex items-center gap-0.5">
+                          {i > 0 && <span className="text-slate-300 mr-0.5">→</span>}
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white" style={{ backgroundColor: PHASE_COLORS[st.phase] }}>
+                            {PHASE_DISPLAY[st.phase]}{st.eventCount > 1 ? ` ×${st.eventCount}` : ''}
+                          </span>
+                        </span>
+                      ))}
+                    </span>
+                    <span className="ml-auto flex items-center gap-1 text-slate-400 shrink-0">
+                      {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      <span className="text-[11px]">{expanded ? 'Hide details' : 'Expand details'}</span>
+                    </span>
+                  </div>
+                </button>
+                {expanded && (
+                  <SessionDetail
+                    session={s}
+                    events={computed.eventsBySession.get(s.id) ?? []}
+                    interactions={scoped.interactions}
+                    scrutiny={scoped.scrutiny}
+                    durations={computed.durations.get(s.id) ?? null}
+                    intervals={computed.intervals.get(s.id) ?? null}
+                    aiLabels={AI_LABELS}
+                    clickAiOption={clickAiOption}
+                    activeAiOption={filters.aiOption}
+                  />
+                )}
+                {aiOpts.length > 0 && !expanded && (
+                  <div className="px-3 pb-2 -mt-0.5 flex flex-wrap gap-1">
+                    {aiOpts.map((o) => (
+                      <button key={o} onClick={() => clickAiOption(o)} className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${filters.aiOption === o ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100'}`}>{AI_LABELS[o] ?? o}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {pageCount > 1 && (
+        <div className="flex items-center justify-between mt-3 text-xs text-slate-500">
+          <span>Showing {page * PATHWAYS_PAGE_SIZE + 1}–{Math.min((page + 1) * PATHWAYS_PAGE_SIZE, scoped.sessions.length)} of {scoped.sessions.length} sessions</span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="border border-slate-300 rounded px-2 py-1 hover:bg-slate-50 disabled:opacity-40">Prev</button>
+            <span>Page {page + 1} / {pageCount}</span>
+            <button onClick={() => setPage(Math.min(pageCount - 1, page + 1))} disabled={page >= pageCount - 1} className="border border-slate-300 rounded px-2 py-1 hover:bg-slate-50 disabled:opacity-40">Next</button>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/* ================= AI Behaviour ================= */
+
+function AiBehaviourTab({ scoped, computed, showRequestDetails, setShowRequestDetails, showRepeated, setShowRepeated, clickAiOption, activeOption }: {
+  scoped: Scoped; computed: Computed;
+  showRequestDetails: boolean; setShowRequestDetails: (v: boolean) => void;
+  showRepeated: boolean; setShowRepeated: (v: boolean) => void;
+  clickAiOption: (o: string) => void; activeOption: string;
+}) {
+  const freq = aiOptionFrequency(scoped.interactions, AI_LABELS);
+  const sessionsWithAi = new Set(scoped.interactions.map((i) => i.session_id)).size;
+  const ivs = scoped.sessions.map((s) => computed.intervals.get(s.id)).filter(Boolean) as SessionIntervals[];
+  const allScGaps = ivs.flatMap((i) => i.scrutinyAfterRequestMs);
+  const median = (arr: number[]) => { if (!arr.length) return null; const s = arr.slice().sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const chartData = freq.map((r) => ({ name: r.label, requests: r.requests, id: r.category }));
+  const activeFreq = activeOption !== 'all' ? freq.find((f) => f.category === activeOption) : null;
+
+  return (
+    <div className="space-y-4">
+      <Section title="AI Assistance Behaviour" subtitle="Exactly which AI assistance option each student selected, and what happened next. Click a bar to filter requests and pathways to that option." actions={
+        <div className="flex gap-2">
+          <button onClick={() => { setShowRequestDetails(!showRequestDetails); if (!showRequestDetails) setShowRepeated(false); }} className={`text-xs border rounded-lg px-3 py-1.5 transition-colors ${showRequestDetails ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}>View Request Details</button>
+          <button onClick={() => { setShowRepeated(!showRepeated); if (!showRepeated) setShowRequestDetails(false); }} className={`text-xs border rounded-lg px-3 py-1.5 transition-colors ${showRepeated ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}>Repeated AI Assistance</button>
+        </div>
+      }>
+        {scoped.interactions.length === 0 ? <EmptyState>No AI requests in scope. Sessions without AI assistance are a valid outcome — that is an observation, not missing data.</EmptyState> : (
+          <>
+            {activeFreq && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-center justify-between">
+                <span>Filtered to <strong>{activeFreq.label}</strong> — {activeFreq.requests} requests by {activeFreq.students} student(s), {activeFreq.pctOfRequests.toFixed(1)}% of all requests.</span>
+                <button onClick={() => clickAiOption(activeOption)} className="underline hover:text-amber-900">clear</button>
+              </div>
+            )}
+            <div className="grid lg:grid-cols-2 gap-5">
+              <div>
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} margin={{ left: 0, right: 10, top: 8, bottom: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#475569' }} interval={0} angle={-18} textAnchor="end" height={54} />
+                      <YAxis tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
+                      <ReTooltip wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="requests" cursor="pointer" onClick={(d: { payload?: { id?: string } }) => d?.payload?.id && clickAiOption(d.payload.id)} radius={[4, 4, 0, 0]} barSize={34}>
+                        {chartData.map((d, i) => <Bar key={i} dataKey="requests" fill={activeOption === d.id ? '#d97706' : '#F59E0B'} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 content-start">
+                <MetricCard label="Total AI requests" value={String(scoped.interactions.length)} />
+                <MetricCard label="Sessions using AI" value={`${sessionsWithAi} / ${scoped.sessions.length}`} />
+                <MetricCard label="Most used option" value={freq[0]?.label ?? '—'} />
+                <MetricCard label="Median request → scrutiny" value={fmtDuration(median(allScGaps))} />
+              </div>
+            </div>
+            {showRequestDetails && (
+              <div className="mt-5">
+                <h3 className="text-sm font-semibold text-slate-700 mb-2">Request details</h3>
+                <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                  <table className="text-xs w-full">
+                    <thead className="text-slate-500 sticky top-0 bg-white"><tr><Th>Student</Th><Th>Option</Th><Th>Requested</Th><Th>Prompt</Th><Th>Scrutinised</Th><Th right>Request → scrutiny</Th><Th right>Scrutiny → code</Th></tr></thead>
+                    <tbody>
+                      {scoped.interactions.slice(0, 100).map((i) => {
+                        const sc = scoped.scrutiny.filter((s) => s.ai_interaction_id === i.id).sort((a, b) => a.created_at.localeCompare(b.created_at))[0] ?? null;
+                        const sessionEvents = (computed.eventsBySession.get(i.session_id) ?? []).filter((e) => new Date(e.timestamp).getTime() >= new Date(i.created_at).getTime() && (e.event_type === 'CODE_RUN' || e.event_type === 'CODE_REVISED'));
+                        const nextCode = sessionEvents[0]?.timestamp ?? null;
+                        const gap1 = sc ? new Date(sc.created_at).getTime() - new Date(i.created_at).getTime() : null;
+                        const gap2 = sc && nextCode ? new Date(nextCode).getTime() - new Date(sc.created_at).getTime() : null;
+                        const neg = (gap1 !== null && gap1 < 0) || (gap2 !== null && gap2 < 0);
+                        return (
+                          <tr key={i.id} className={neg ? 'bg-amber-50/60' : ''}>
+                            <td className="py-1.5 px-2 font-mono">{i.participant_id}</td>
+                            <td className="py-1.5 px-2 whitespace-nowrap"><button onClick={() => clickAiOption(i.category)} className={`hover:underline ${activeOption === i.category ? 'text-amber-700 font-medium' : 'text-slate-700'}`}>{AI_LABELS[i.category] ?? i.category}</button></td>
+                            <td className="py-1.5 px-2 whitespace-nowrap text-slate-500">{new Date(i.created_at).toLocaleString()}</td>
+                            <td className="py-1.5 px-2 max-w-52 truncate text-slate-500" title={i.prompt}>{i.prompt.slice(0, 80) || '—'}</td>
+                            <td className="py-1.5 px-2">{sc ? <span className="text-emerald-600">yes</span> : <span className="text-slate-300">no</span>}</td>
+                            <td className="py-1.5 px-2 text-right font-mono">{gap1 !== null && gap1 < 0 ? <span className="text-amber-600" title="Scrutiny timestamp precedes the request — see Data Quality.">⚠ {fmtDuration(Math.abs(gap1))}</span> : fmtDuration(gap1)}</td>
+                            <td className="py-1.5 px-2 text-right font-mono">{gap2 !== null && gap2 < 0 ? <span className="text-amber-600" title="Code run precedes scrutiny — see Data Quality.">⚠ {fmtDuration(Math.abs(gap2))}</span> : fmtDuration(gap2)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {scoped.interactions.length > 100 && <p className="text-xs text-slate-400 mt-2">Showing the first 100 requests — export for the full set.</p>}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-2">Rows marked ⚠ have chronologically inconsistent timestamps; the raw records are preserved and listed under Data Quality.</p>
+              </div>
+            )}
+            {showRepeated && (
+              <div className="mt-5">
+                <h3 className="text-sm font-semibold text-slate-700 mb-2">Repeated AI assistance</h3>
+                <table className="text-xs w-full max-w-3xl">
+                  <thead className="text-slate-500"><tr><Th>Student</Th><Th right>Requests</Th><Th right>Distinct options</Th><Th>Repeated option</Th><Th right>Scrutiny cycles</Th></tr></thead>
+                  <tbody>
+                    {repeatedAiPerSession(scoped.interactions, scoped.scrutiny, AI_LABELS).slice(0, 20).map((r) => (
+                      <tr key={r.sessionId}><td className="py-1.5 px-2 font-mono">{r.participantId}</td><td className="py-1.5 px-2 text-right font-mono">{r.totalRequests}</td><td className="py-1.5 px-2 text-right font-mono">{r.optionsUsed}</td><td className="py-1.5 px-2">{r.repeatedOption ? `${r.repeatedOption} ×${r.repeatedOptionCount}` : '—'}</td><td className="py-1.5 px-2 text-right font-mono">{r.scrutinyCycles}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+/* ================= Networks ================= */
+
+function NetworksTab({ scoped, computed, netSource, setNetSource, minEdgeWeight, setMinEdgeWeight, edgeProbabilityMode, setEdgeProbabilityMode, showNodeLabels, setShowNodeLabels, aiNetOption, setAiNetOption, netSelection, setNetSelection }: {
+  scoped: Scoped; computed: Computed;
+  netSource: 'phase' | 'activity' | 'ai'; setNetSource: (v: 'phase' | 'activity' | 'ai') => void;
+  minEdgeWeight: number; setMinEdgeWeight: (v: number) => void;
+  edgeProbabilityMode: boolean; setEdgeProbabilityMode: (v: boolean) => void;
+  showNodeLabels: boolean; setShowNodeLabels: (v: boolean) => void;
+  aiNetOption: string; setAiNetOption: (v: string) => void;
+  netSelection: NetworkSelection | null; setNetSelection: (s: NetworkSelection | null) => void;
+}) {
+  const net: NetworkGraph = netSource === 'phase' ? computed.phaseNet : netSource === 'activity' ? computed.activityNet : computed.aiNet;
+  const emptyMsg = netSource === 'ai' && scoped.interactions.length === 0
+    ? 'No AI requests in scope — the AI pathway network is empty by observation, not by error.'
+    : net.nodes.length === 0 ? 'No recorded activity in scope for this network.' : null;
+
+  return (
+    <Section title="Network Visualisations" subtitle="Force-directed maps of observed activity. Every node is a recorded event category; every arrow an observed chronological transition between consecutive events. Proximity is a layout artefact, not evidence of effectiveness.">
+      <div className="flex flex-wrap items-center gap-4 mb-4">
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+          {([['phase', 'Phase Network'], ['activity', 'Activity Network'], ['ai', 'AI Pathway Network']] as const).map(([key, lbl]) => (
+            <button key={key} onClick={() => { setNetSource(key); setNetSelection(null); }} className={`px-3 py-1.5 font-medium transition-colors ${netSource === key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{lbl}</button>
+          ))}
+        </div>
+        <label className="text-xs text-slate-500">Min edge frequency
+          <input type="number" min={1} max={50} value={minEdgeWeight} onChange={(e) => setMinEdgeWeight(Math.max(1, Number(e.target.value)))} className="ml-2 w-16 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-500">
+          <input type="checkbox" checked={edgeProbabilityMode} onChange={(e) => setEdgeProbabilityMode(e.target.checked)} className="rounded" />
+          Counts ↔ probabilities
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-500">
+          <input type="checkbox" checked={showNodeLabels} onChange={(e) => setShowNodeLabels(e.target.checked)} className="rounded" />
+          Node labels
+        </label>
+        {netSource === 'ai' && (
+          <label className="text-xs text-slate-500">AI option
+            <select value={aiNetOption} onChange={(e) => { setAiNetOption(e.target.value); setNetSelection(null); }} className="ml-2 border border-slate-300 rounded-lg px-2 py-1 text-sm">
+              <option value="all">All options</option>
+              {AI_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+      <div className="relative">
+        {emptyMsg ? <EmptyState>{emptyMsg}</EmptyState> : (
+          <NetworkGraphView
+            graph={net}
+            selection={netSelection}
+            onSelect={setNetSelection}
+            minEdgeWeight={minEdgeWeight}
+            probabilityMode={edgeProbabilityMode}
+            showLabels={showNodeLabels}
+            filename={`temporal_${netSource}_network`}
+          />
+        )}
+        {/* Collapsible inspector drawer */}
+        {netSelection && !emptyMsg && (
+          <div className="absolute top-0 right-0 h-full w-80 max-w-[90%] bg-white border-l border-slate-200 shadow-xl rounded-r-lg overflow-y-auto z-20">
+            <div className="sticky top-0 bg-white border-b border-slate-100 px-3 py-2 flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-700">Inspector</span>
+              <button onClick={() => setNetSelection(null)} className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100"><X className="w-3.5 h-3.5" /></button>
+            </div>
+            <div className="p-3">
+              <NetworkInspector net={net} selection={netSelection} scoped={scoped} computed={computed} netSource={netSource} onClose={() => setNetSelection(null)} />
+            </div>
+          </div>
+        )}
+      </div>
+      <p className="text-[11px] text-slate-400 mt-3">Legend — Phase Network: the five PAUSE phases (Plan blue, Attempt green, Use AI orange, Scrutinise purple, Evaluate red; archived Edit shown separately). Activity Network: concrete recorded activities. AI Pathway Network: orange option nodes carry the exact AI option labels stored in the database. Click a node or edge to open the inspector drawer.</p>
+    </Section>
+  );
+}
+
+/* ================= Advanced subs ================= */
+
+function NotImplementedSub({ title, description }: { title: string; description: string }) {
+  return (
+    <Section title={title}>
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+        <p className="font-medium text-slate-700 mb-1">Not implemented</p>
+        {description}
+      </div>
+    </Section>
+  );
+}
+
+function SequencesSub({ computed, minFreq, setMinFreq, seqMinLen, setSeqMinLen, seqMaxLen, setSeqMaxLen }: {
+  computed: Computed; minFreq: number; setMinFreq: (v: number) => void;
+  seqMinLen: number; setSeqMinLen: (v: number) => void; seqMaxLen: number; setSeqMaxLen: (v: number) => void;
+}) {
+  return (
+    <Section title="Frequent Sequences" subtitle="Descriptive n-gram counts over session pathways. No statistical significance is asserted.">
+      <div className="flex flex-wrap items-end gap-4 mb-4">
+        <label className="text-xs text-slate-500">Min sequence length
+          <input type="number" min={2} max={8} value={seqMinLen} onChange={(e) => setSeqMinLen(Math.max(2, Number(e.target.value)))} className="mt-1 ml-2 w-16 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
+        </label>
+        <label className="text-xs text-slate-500">Max sequence length
+          <input type="number" min={2} max={8} value={seqMaxLen} onChange={(e) => setSeqMaxLen(Math.min(8, Number(e.target.value)))} className="mt-1 ml-2 w-16 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
+        </label>
+        <label className="text-xs text-slate-500">Minimum frequency
+          <input type="number" min={1} max={50} value={minFreq} onChange={(e) => setMinFreq(Math.max(1, Number(e.target.value)))} className="mt-1 ml-2 w-16 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
+        </label>
+        <span className="text-[11px] text-slate-400">{Object.entries(STEP_LABELS).map(([k, v]) => <span key={k} className="mr-2" style={{ color: STEP_COLORS[k as StepToken] }}>{v}</span>)}</span>
+      </div>
+      {computed.patterns.length === 0 ? <EmptyState>No sequences reach the current minimum frequency. Lower the threshold or widen the filters.</EmptyState> : (
+        <table className="text-xs w-full max-w-3xl">
+          <thead className="text-slate-500"><tr><Th>Sequence</Th><Th right>Count</Th><Th right>Students</Th><Th right>Sessions</Th></tr></thead>
+          <tbody>
+            {computed.patterns.slice(0, 15).map((p) => (
+              <tr key={p.sequence}><td className="py-1.5 px-2 text-slate-700">{p.sequence}</td><td className="py-1.5 px-2 text-right font-mono">{p.count}</td><td className="py-1.5 px-2 text-right font-mono">{p.participants}</td><td className="py-1.5 px-2 text-right font-mono">{p.sessions}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Section>
+  );
+}
+
+function PerformanceSub({ scoped, computed }: { scoped: Scoped; computed: Computed }) {
+  return (
+    <Section title="Pathway & Performance Comparisons" subtitle="Temporal metrics by approved grade band. Only researcher-approved marks are used; ungraded work is excluded, never counted as zero. No causal claim is made.">
+      <table className="text-xs w-full max-w-4xl">
+        <thead className="text-slate-500"><tr><Th>Approved grade band</Th><Th right>Sessions</Th><Th right>Students</Th><Th right>Avg AI requests</Th><Th right>Avg scrutiny cycles</Th><Th right>Avg active min</Th><Th right>Median min to first AI</Th></tr></thead>
+        <tbody>
+          {computed.bandComparison.rows.map((r) => (
+            <tr key={r.band}>
+              <td className="py-1.5 px-2 text-slate-700">{r.band}</td><td className="py-1.5 px-2 text-right font-mono">{r.sessions}</td><td className="py-1.5 px-2 text-right font-mono">{r.participants}</td>
+              <td className="py-1.5 px-2 text-right font-mono">{r.avgAiRequests !== null ? r.avgAiRequests.toFixed(1) : '—'}</td>
+              <td className="py-1.5 px-2 text-right font-mono">{r.avgScrutinyCycles !== null ? r.avgScrutinyCycles.toFixed(1) : '—'}</td>
+              <td className="py-1.5 px-2 text-right font-mono">{r.avgActiveMinutes !== null ? r.avgActiveMinutes.toFixed(1) : '—'}</td>
+              <td className="py-1.5 px-2 text-right font-mono">{r.medianMinutesToFirstAi !== null ? r.medianMinutesToFirstAi.toFixed(1) : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-[11px] text-slate-400 mt-2">Based on {computed.bandComparison.gradedCount} graded and {computed.bandComparison.ungradedCount} ungraded sessions. AI draft marks are never used.</p>
+    </Section>
+  );
+}
+
+function TimingSub({ scoped, computed, sort, setSort }: { scoped: Scoped; computed: Computed; sort: { key: string; asc: boolean }; setSort: (s: { key: string; asc: boolean }) => void }) {
+  const ivs = scoped.sessions.map((s) => computed.intervals.get(s.id)).filter(Boolean) as SessionIntervals[];
+  const sum = (arr: number[]) => arr.reduce((a, v) => a + v, 0);
+  const medOf = (arr: number[]) => { if (!arr.length) return null; const s = arr.slice().sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const allFirstAi = ivs.map((i) => i.firstCodeToFirstAiMs).filter((v): v is number => v !== null && v >= 0);
+  const durs = scoped.sessions.map((s) => computed.durations.get(s.id)).filter(Boolean) as SessionDurations[];
+
+  const sorted = useMemo(() => {
+    const rows = scoped.sessions.map((s) => ({ s, d: computed.durations.get(s.id), iv: computed.intervals.get(s.id) }));
+    const val = (r: { s: Session; d?: SessionDurations; iv?: SessionIntervals }) => {
+      switch (sort.key) {
+        case 'aiRequests': return r.iv?.aiRequestCount ?? 0;
+        case 'observed': return r.d?.observedMs ?? 0;
+        case 'active': return r.d?.activeMs ?? 0;
+        default: return r.s.participant_id;
+      }
+    };
+    return rows.sort((a, b) => {
+      const va = val(a); const vb = val(b);
+      const cmp = typeof va === 'string' ? String(va).localeCompare(String(vb)) : Number(va) - Number(vb);
+      return sort.asc ? cmp : -cmp;
+    });
+  }, [scoped.sessions, computed, sort]);
+
+  function toggle(key: string) { setSort({ key, asc: sort.key === key ? !sort.asc : true }); }
+
+  return (
+    <Section title="Timing & Help-Seeking" subtitle={`Times are observed elapsed (wall-clock) time; estimated active time caps each silent gap at ${GAP_CAP_MINUTES} minutes — a documented analytical assumption, not measured engagement. Missing timestamps are excluded, never estimated.`} actions={
+      <button onClick={() => exportAsCSV(exportDurations(scoped.sessions, computed.durations), 'temporal_durations')} className="flex items-center gap-1.5 text-xs border border-slate-300 rounded-lg px-3 py-1.5 hover:bg-slate-50"><Download className="w-3.5 h-3.5" /> Export durations</button>
+    }>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        <MetricCard label="Sessions with activity" value={String(durs.length)} />
+        <MetricCard label="Total observed time" value={fmtDuration(sum(durs.map((d) => d.observedMs ?? 0)) || null)} />
+        <MetricCard label="Total estimated active time" value={fmtDuration(sum(durs.map((d) => d.activeMs)) || null)} />
+        <MetricCard label="Median time to first AI request" value={fmtDuration(medOf(allFirstAi))} />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="text-xs w-full">
+          <thead className="text-slate-500"><tr>
+            <Th onClick={() => toggle('participant')}>Student {sort.key === 'participant' ? (sort.asc ? '▲' : '▼') : ''}</Th>
+            <Th>Session</Th><Th right>Plan → first code</Th><Th right>First code → first AI</Th>
+            <Th right onClick={() => toggle('aiRequests')}>AI requests {sort.key === 'aiRequests' ? (sort.asc ? '▲' : '▼') : ''}</Th>
+            <Th right>Median AI gap</Th><Th right>Median req → scrutiny</Th><Th right>Median scrutiny → code</Th>
+            <Th right onClick={() => toggle('observed')}>Observed {sort.key === 'observed' ? (sort.asc ? '▲' : '▼') : ''}</Th>
+            <Th right onClick={() => toggle('active')}>Est. active {sort.key === 'active' ? (sort.asc ? '▲' : '▼') : ''}</Th>
+          </tr></thead>
+          <tbody>
+            {sorted.slice(0, 40).map(({ s, d, iv }) => {
+              const med = (arr: number[]) => (arr.length ? medOf(arr) : null);
+              return (
+                <tr key={s.id}>
+                  <td className="py-1.5 px-2 font-mono">{s.participant_id}</td>
+                  <td className="py-1.5 px-2 font-mono text-slate-400">{s.id.slice(0, 8)}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(iv?.planToFirstCodeMs ?? null)}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(iv?.firstCodeToFirstAiMs ?? null)}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{iv?.aiRequestCount ?? 0}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(med(iv?.aiRequestGapsMs ?? []))}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(med(iv?.scrutinyAfterRequestMs ?? []))}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(med(iv?.codeAfterScrutinyMs ?? []))}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{fmtDuration(d?.observedMs ?? null)}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{d ? fmtDuration(d.activeMs) : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-slate-400 mt-2">Students who never requested AI show "—" for AI columns — a genuine outcome, not missing data. Negative or inconsistent intervals are flagged under Data Quality rather than displayed as durations. Long inactivity gaps (&gt; 30 min) are listed in the Data Quality panel.</p>
+    </Section>
+  );
+}
+
+function TransitionTablesSub({ computed }: { computed: Computed }) {
+  const t = computed.transitions;
+  function downloadMatrix() {
+    exportAsCSV(t.phases.flatMap((a, i) => t.phases.map((b, j) => ({ from_phase: a, to_phase: b, count: t.counts[i][j], row_probability: t.probabilities[i][j].toFixed(4) }))).filter((r: { count: number }) => r.count > 0), 'temporal_phase_transitions');
+  }
+  return (
+    <Section title="Advanced Transition Tables" subtitle="Full frequency and probability matrices behind the network view." actions={
+      <button onClick={downloadMatrix} className="flex items-center gap-1.5 text-xs border border-slate-300 rounded-lg px-3 py-1.5 hover:bg-slate-50"><Table2 className="w-3.5 h-3.5" /> Download matrix (CSV)</button>
+    }>
+      {t.rowTotals.every((x) => x === 0) ? <EmptyState>No phase transitions recorded in scope.</EmptyState> : (
+        <div className="grid lg:grid-cols-2 gap-6">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Frequency</h3>
+            <TransitionTable phases={t.phases} counts={t.counts} rowTotals={t.rowTotals} />
+            <p className="text-xs text-slate-500 mt-2">Forward movements: {t.forward} · Backward movements: {t.backward}</p>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Probability (row-normalised)</h3>
+            <TransitionTable phases={t.phases} counts={t.probabilities.map((r) => r.map((v) => Math.round(v * 100)))} rowTotals={null} percent />
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function ExportsSub({ scoped, computed }: { scoped: Scoped; computed: Computed }) {
+  return (
+    <Section title="Research Data Exports" subtitle={`CSV exports matching the current filters. Analysis version ${ANALYSIS_VERSION}; exported ${new Date().toISOString().slice(0, 10)}.`}>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <ExportCard label="Raw event records" desc="Timestamped events with stable ids, participant, task, session, phase and type" onClick={() => exportAsCSV(scoped.events.map(toRawEventRow), 'temporal_raw_events')} />
+        <ExportCard label="Learning sequences" desc="Ordered phase steps per session with event counts and spans (raw labels, incl. archived Edit)" onClick={() => exportAsCSV(exportSequences(scoped, computed.eventsBySession), 'temporal_learning_sequences')} />
+        <ExportCard label="AI option selections" desc="Every AI request with option id, label, timestamps and scrutiny linkage" onClick={() => exportAsCSV(exportAiSelections(scoped), 'temporal_ai_option_selections')} />
+        <ExportCard label="Phase transition frequencies" desc="from → to counts and row probabilities" onClick={() => { const t = computed.transitions; exportAsCSV(t.phases.flatMap((a, i) => t.phases.map((b, j) => ({ from_phase: a, to_phase: b, count: t.counts[i][j], row_probability: t.probabilities[i][j].toFixed(4) }))).filter((r: { count: number }) => r.count > 0), 'temporal_phase_transitions'); }} />
+        <ExportCard label="Temporal duration metrics" desc="Observed vs estimated active time per session and phase" onClick={() => exportAsCSV(exportDurations(scoped.sessions, computed.durations), 'temporal_durations')} />
+        <ExportCard label="Frequent sequence counts" desc="Discovered n-grams with frequency controls applied" onClick={() => exportAsCSV(computed.patterns.map((p) => ({ sequence: p.sequence, length: p.length, count: p.count, participants: p.participants, sessions: p.sessions })), 'temporal_sequence_patterns')} />
+        <ExportCard label="Participant temporal summaries" desc="Per participant: sessions, AI requests, scrutiny cycles, observed and active time" onClick={() => exportAsCSV(exportParticipantSummaries(scoped, computed), 'temporal_participant_summaries')} />
+        <ExportCard label="Grades linked to temporal metrics" desc="Approved marks joined with temporal intervals per session" onClick={() => exportAsCSV(exportGradesLinked(scoped, computed), 'temporal_grades_linked')} />
+      </div>
+      <p className="text-[11px] text-slate-400 mt-3">Data dictionary — event rows: id, participant_id, task_id, session_id, timestamp, pause_phase (raw label, incl. historical 'edit'), event_type, description; sequence rows: session_id, participant_id, step_index, phase, step_start, step_end, event_count; AI rows: interaction id, category (option id), option_label, prompt, created_at, scrutinised, seconds_to_scrutiny; duration rows: session_id, phase, observed_ms, active_ms (gaps &gt; {GAP_CAP_MINUTES} min capped at {GAP_CAP_MINUTES} min — documented analytical assumption); participant rows: participant_id, session_count, ai_requests, scrutiny_cycles, observed_ms, active_ms; grade rows: session_id, participant_id, approved_mark, band, ai_request_count, scrutiny_cycles, minutes_to_first_ai. Duplicate suppression (≤ 2 s, same type + description) applies to analysis only; raw exports keep every stored record. Historical compatibility: the archived 'edit' phase is kept as a separate label in all outputs, never merged into 'scrutinise'.</p>
+    </Section>
+  );
+}
+
+/* ================= Data Quality ================= */
+
+function DataQualityPill({ report, open, onToggle }: { report: DataQualityReport; open: boolean; onToggle: () => void }) {
+  const issueCount = report.duplicateCandidates + report.missingTimestamps + report.negativeIntervals.length + report.sessionsWithLongGaps.length + report.incompleteSessions + report.missingAiOptionIds;
+  const ok = issueCount === 0;
+  return (
+    <button onClick={onToggle} className={`flex items-center gap-1.5 text-xs border rounded-lg px-3 py-2 transition-colors ${ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'}`}>
+      {ok ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+      Data quality {ok ? 'OK' : `· ${issueCount} notice${issueCount === 1 ? '' : 's'}`}
+      {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
+
+function DataQualityPanel({ report, onClose }: { report: DataQualityReport; onClose: () => void }) {
+  const item = (label: string, count: number, detail?: React.ReactNode) => (
+    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 last:border-0">
+      <div>
+        <div className="text-sm text-slate-700">{label}</div>
+        {detail && <div className="text-[11px] text-slate-400 mt-0.5">{detail}</div>}
+      </div>
+      <span className={`font-mono text-sm shrink-0 ${count > 0 ? 'text-amber-600' : 'text-slate-300'}`}>{count}</span>
+    </div>
+  );
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-base font-bold text-navy-900">Data Quality</h2>
+        <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Descriptive audit of the records behind every figure on this page. Raw records are always preserved; analysis-time duplicate suppression never modifies stored data.</p>
+      {item('Duplicate event candidates', report.duplicateCandidates, 'Same session, event type and description within 2 seconds — treated as one in analysis; verify no legitimate rapid events were suppressed.')}
+      {item('Missing timestamps', report.missingTimestamps, 'Events without a parseable timestamp are excluded from all durations and sequences.')}
+      {item('Negative or inconsistent intervals', report.negativeIntervals.length, report.negativeIntervals.length > 0 ? `e.g. ${report.negativeIntervals[0].kind} (${report.negativeIntervals[0].participantId}, ${new Date(report.negativeIntervals[0].fromTs).toLocaleString()})` : 'Scrutiny recorded before its linked AI request, or code activity preceding the scrutiny it should follow.')}
+      {item('Sessions with long inactivity gaps', report.sessionsWithLongGaps.length, `Gaps over ${Math.round(LONG_GAP_MS / 60000)} minutes between consecutive events. Wall-clock time includes these; estimated active time does not.`)}
+      {item('Incomplete sessions', report.incompleteSessions, 'Sessions not marked completed — durations cover only the observed event span.')}
+      {item('Missing AI option IDs', report.missingAiOptionIds, 'AI requests without a stored option category.')}
+      {item('Sessions missing approved grades', report.sessionsMissingApprovedGrades, `Of ${report.totalSessions} sessions. Ungraded work is excluded from performance comparisons, never counted as zero.`)}
+      <p className="text-[11px] text-slate-400 mt-3">Analytical assumptions: inactivity cap {GAP_CAP_MINUTES} min per silent gap for estimated active time; long-gap threshold {Math.round(LONG_GAP_MS / 60000)} min; duplicate suppression window 2 s. All three are configurable in the temporal analysis code and are applied identically across every view.</p>
+    </div>
+  );
+}
+
+/* ================= Shared pieces ================= */
 
 function medianOf(arr: number[]): number | null {
   if (!arr.length) return null;
@@ -527,7 +863,7 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TransitionTable({ phases, counts, rowTotals, percent = false }: { phases: string[]; counts: (number | number)[][]; rowTotals: number[] | null; percent?: boolean }) {
+function TransitionTable({ phases, counts, rowTotals, percent = false }: { phases: string[]; counts: number[][]; rowTotals: number[] | null; percent?: boolean }) {
   return (
     <div className="overflow-x-auto">
       <table className="text-[11px]">
@@ -537,7 +873,7 @@ function TransitionTable({ phases, counts, rowTotals, percent = false }: { phase
             <tr key={a}>
               <td className="px-2 py-1 font-medium" style={{ color: PHASE_COLORS[a] }}>{PHASE_DISPLAY[a]}</td>
               {phases.map((b, j) => (
-                <td key={b} className={`px-2 py-1 text-right font-mono ${a === b ? 'text-slate-300' : counts[i][j] === 0 ? 'text-slate-300' : 'text-slate-800'}`}>{percent ? `${counts[i][j] as number}%` : counts[i][j]}</td>
+                <td key={b} className={`px-2 py-1 text-right font-mono ${a === b ? 'text-slate-300' : counts[i][j] === 0 ? 'text-slate-300' : 'text-slate-800'}`}>{percent ? `${counts[i][j]}%` : counts[i][j]}</td>
               ))}
               {rowTotals && <td className="px-2 py-1 text-right font-mono text-slate-400">{rowTotals[i]}</td>}
             </tr>
@@ -548,20 +884,24 @@ function TransitionTable({ phases, counts, rowTotals, percent = false }: { phase
   );
 }
 
-function SessionDetail({ session, events, interactions, scrutiny, durations, intervals }: { session: Session; events: EventLog[]; interactions: AIInteraction[]; scrutiny: ScrutinyResponse[]; durations: SessionDurations | null; intervals: SessionIntervals | null }) {
+function SessionDetail({ session, events, interactions, scrutiny, durations, intervals, aiLabels, clickAiOption, activeAiOption }: {
+  session: Session; events: EventLog[]; interactions: AIInteraction[]; scrutiny: ScrutinyResponse[];
+  durations: SessionDurations | null; intervals: SessionIntervals | null;
+  aiLabels: Record<string, string>; clickAiOption: (o: string) => void; activeAiOption: string;
+}) {
   const ordered = events.slice().sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const sessInts = interactions.filter((i) => i.session_id === session.id);
   return (
-    <div className="border border-blue-200 bg-blue-50/30 rounded-lg p-4 mt-3">
-      <div className="text-sm font-semibold text-navy-900 mb-2">Session detail — {session.participant_id} · {session.id.slice(0, 8)}</div>
+    <div className="border-t border-slate-100 bg-slate-50/50 rounded-b-lg p-4">
       <div className="grid sm:grid-cols-4 gap-2 text-xs mb-3">
         <MetricCard label="Events" value={String(ordered.length)} />
-        <MetricCard label="AI requests" value={String(interactions.filter((i) => i.session_id === session.id).length)} />
+        <MetricCard label="AI requests" value={String(sessInts.length)} />
         <MetricCard label="Observed" value={fmtDuration(durations?.observedMs ?? null)} />
         <MetricCard label="Est. active" value={fmtDuration(durations?.activeMs ?? null)} />
       </div>
       <div className="space-y-1 max-h-72 overflow-y-auto">
         {ordered.map((e) => (
-          <div key={e.id} className="flex items-start gap-2 text-xs border-b border-blue-100/60 pb-1">
+          <div key={e.id} className="flex items-start gap-2 text-xs border-b border-slate-100 pb-1">
             <span className="font-mono text-slate-400 shrink-0">{new Date(e.timestamp).toLocaleTimeString()}</span>
             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white shrink-0" style={{ backgroundColor: PHASE_COLORS[e.pause_phase] ?? '#64748B' }}>{PHASE_DISPLAY[e.pause_phase] ?? e.pause_phase}</span>
             <span className="font-mono text-slate-600 shrink-0">{e.event_type}</span>
@@ -570,8 +910,20 @@ function SessionDetail({ session, events, interactions, scrutiny, durations, int
         ))}
         {ordered.length === 0 && <p className="text-xs text-slate-400">No events recorded for this session.</p>}
       </div>
+      {sessInts.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[11px] font-medium text-slate-500 mb-1">AI requests in this session</div>
+          <div className="flex flex-wrap gap-1.5">
+            {sessInts.map((i) => (
+              <button key={i.id} onClick={() => clickAiOption(i.category)} className={`text-[10px] px-2 py-1 rounded border font-mono transition-colors ${activeAiOption === i.category ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-amber-50'}`} title={i.prompt}>
+                {new Date(i.created_at).toLocaleTimeString()} · {aiLabels[i.category] ?? i.category}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {intervals && intervals.aiRequestGapsMs.length > 0 && (
-        <p className="text-[11px] text-slate-500 mt-2">Gaps between this student's AI requests: {intervals.aiRequestGapsMs.map((g) => fmtDuration(g)).join(', ')} · {scrutiny.filter((s) => s.session_id === session.id).length} scrutiny cycle(s).</p>
+        <p className="text-[11px] text-slate-500 mt-2">Gaps between AI requests: {intervals.aiRequestGapsMs.map((g) => fmtDuration(g)).join(', ')} · {scrutiny.filter((s) => s.session_id === session.id).length} scrutiny cycle(s).</p>
       )}
     </div>
   );
@@ -668,7 +1020,8 @@ function gradeBandFor(mark: number): string {
   return '85–100';
 }
 
-// Scoped and Computed interfaces declared above the default export.
+interface Scoped { sessions: Session[]; events: EventLog[]; interactions: AIInteraction[]; scrutiny: ScrutinyResponse[]; approved: Map<string, number> }
+interface Computed { durations: Map<string, SessionDurations>; intervals: Map<string, SessionIntervals>; eventsBySession: Map<string, EventLog[]>; netData: NetworkDataset }
 
 function NetworkInspector({ net, selection, scoped, computed, netSource, onClose }: {
   net: NetworkGraph;
@@ -685,14 +1038,13 @@ function NetworkInspector({ net, selection, scoped, computed, netSource, onClose
   const resolveUnit = (e: EventLog): string | null => {
     if (netSource === 'phase') return e.pause_phase ?? null;
     if (netSource === 'activity') return classifyEvent(e);
-    return null; // AI-network edges splice interactions, so event-only resolution doesn't apply
+    return null;
   };
 
   function exportEdgeCsv() {
     if (!edge) return;
     let rows: Record<string, unknown>[];
     if (netSource === 'ai') {
-      // Supporting AI-network transitions: rebuild per-session unit streams.
       const bySession = new Map<string, { unit: string; ts: string; participantId: string }[]>();
       for (const i of scoped.interactions) {
         if (!bySession.has(i.session_id)) bySession.set(i.session_id, []);
@@ -730,24 +1082,16 @@ function NetworkInspector({ net, selection, scoped, computed, netSource, onClose
     : [];
 
   return (
-    <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-xs">
-      {!selection && (
-        <div className="text-slate-400">
-          <p className="font-medium text-slate-500 mb-1">Inspector</p>
-          Click a node to see its recorded event frequency, or an edge to inspect the underlying transitions. Drag nodes to rearrange; scroll to zoom.
-        </div>
-      )}
+    <div className="text-xs">
+      {!node && !edge && <div className="text-slate-400">Select a node or edge on the graph.</div>}
       {node && (
         <div>
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: node.color }} />
-              <span className="font-semibold text-slate-800">{node.label}</span>
-            </div>
-            <button onClick={onClose} className="text-slate-400 hover:text-slate-700">clear</button>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-3 h-3 rounded-full" style={{ backgroundColor: node.color }} />
+            <span className="font-semibold text-slate-800">{node.label}</span>
           </div>
           <dl className="space-y-1 text-slate-600">
-            <div className="flex justify-between"><dt>Recorded events in node</dt><dd className="font-mono">{node.frequency}</dd></div>
+            <div className="flex justify-between"><dt>Recorded events</dt><dd className="font-mono">{node.frequency}</dd></div>
             <div className="flex justify-between"><dt>Node type</dt><dd>{node.kind === 'ai_option' ? 'AI assistance option' : node.kind}</dd></div>
             <div className="flex justify-between"><dt>Outgoing transitions</dt><dd className="font-mono">{net.edges.filter((e) => e.source === node.id).reduce((s, e) => s + e.weight, 0)}</dd></div>
             <div className="flex justify-between"><dt>Incoming transitions</dt><dd className="font-mono">{net.edges.filter((e) => e.target === node.id).reduce((s, e) => s + e.weight, 0)}</dd></div>
@@ -756,13 +1100,10 @@ function NetworkInspector({ net, selection, scoped, computed, netSource, onClose
       )}
       {edge && (
         <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="font-semibold text-slate-800">{labelFor(edge.source)} → {labelFor(edge.target)}</span>
-            <button onClick={onClose} className="text-slate-400 hover:text-slate-700">clear</button>
-          </div>
+          <div className="font-semibold text-slate-800 mb-2">{labelFor(edge.source)} → {labelFor(edge.target)}</div>
           <dl className="space-y-1 text-slate-600 mb-3">
             <div className="flex justify-between"><dt>Observed transitions</dt><dd className="font-mono">{edge.weight}</dd></div>
-            <div className="flex justify-between"><dt>Probability (of outgoing from {labelFor(edge.source)})</dt><dd className="font-mono">{(edge.probability * 100).toFixed(1)}%</dd></div>
+            <div className="flex justify-between"><dt>Probability of outgoing</dt><dd className="font-mono">{(edge.probability * 100).toFixed(1)}%</dd></div>
           </dl>
           {supporting.length > 0 && (
             <>
@@ -774,10 +1115,11 @@ function NetworkInspector({ net, selection, scoped, computed, netSource, onClose
               </ul>
             </>
           )}
-          {netSource === 'ai' && <p className="text-slate-400 mb-2">For the AI pathway network, sequences are reconstructed from merged AI-interaction and event timestamps (see export for the full list).</p>}
-          <button onClick={exportEdgeCsv} className="flex items-center gap-1.5 border border-slate-300 bg-white rounded-lg px-2.5 py-1.5 hover:bg-slate-100"><Download className="w-3.5 h-3.5" /> Export supporting transitions (CSV)</button>
+          {netSource === 'ai' && <p className="text-slate-400 mb-2">Sequences are reconstructed from merged AI-interaction and event timestamps (see CSV export for the full list).</p>}
+          <button onClick={exportEdgeCsv} className="flex items-center gap-1.5 border border-slate-300 bg-white rounded-lg px-2.5 py-1.5 hover:bg-slate-100"><Download className="w-3.5 h-3.5" /> Export transitions (CSV)</button>
         </div>
       )}
+      <button onClick={onClose} className="mt-3 text-slate-400 hover:text-slate-700 underline text-[11px]">close inspector</button>
     </div>
   );
 }

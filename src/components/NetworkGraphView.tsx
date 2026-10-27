@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import svgExport from 'cytoscape-svg';
-import { Download, Maximize2, Minus, Plus, Crosshair } from 'lucide-react';
+import { Download, Maximize2, Minus, Plus, Crosshair, Expand } from 'lucide-react';
 import type { NetworkGraph } from '@/lib/temporal/network';
 
 // Register the SVG exporter once per module load.
@@ -26,8 +26,11 @@ interface Props {
   onSelect: (sel: NetworkSelection | null) => void;
   minEdgeWeight: number;
   probabilityMode: boolean;
+  showLabels?: boolean;
   height?: number;
   filename: string;
+  /** Optional fullscreen toggle rendered by the parent. */
+  fullscreenSlot?: React.ReactNode;
 }
 
 /**
@@ -35,12 +38,13 @@ interface Props {
  * hover tooltips and click inspection. Nodes sized by frequency, edges by
  * transition count (or normalised probability in probabilityMode).
  */
-export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWeight, probabilityMode, height = 420, filename }: Props) {
+export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWeight, probabilityMode, showLabels = true, height = 460, filename, fullscreenSlot }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const cyRef = useRef<any>(null);
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
   const [ready, setReady] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
     ensureSvgPlugin();
@@ -52,7 +56,7 @@ export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWe
         {
           selector: 'node',
           style: {
-            label: 'data(label)',
+            label: showLabels ? 'data(label)' : '',
             'background-color': 'data(color)',
             width: 'data(size)' as unknown as string,
             height: 'data(size)' as unknown as string,
@@ -190,6 +194,8 @@ export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWe
           <span>Node size = event frequency · Edge thickness = {probabilityMode ? 'normalised probability' : 'transition count'} · Arrows show temporal order</span>
         </div>
         <div className="flex items-center gap-1.5">
+          <button onClick={() => setFullscreen(!fullscreen)} title="Fullscreen" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Expand className={`w-3.5 h-3.5 ${fullscreen ? 'text-blue-600' : ''}`} /></button>
+          {fullscreenSlot}
           <button onClick={() => cyRef.current?.zoom(cyRef.current.zoom() * 1.25)} title="Zoom in" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Plus className="w-3.5 h-3.5" /></button>
           <button onClick={() => cyRef.current?.zoom(cyRef.current.zoom() / 1.25)} title="Zoom out" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Minus className="w-3.5 h-3.5" /></button>
           <button onClick={() => { cyRef.current?.fit(undefined, 30); }} title="Fit to view" className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"><Maximize2 className="w-3.5 h-3.5" /></button>
@@ -198,7 +204,7 @@ export default function NetworkGraphView({ graph, selection, onSelect, minEdgeWe
           <button onClick={() => download('png')} className="flex items-center gap-1 text-xs border border-slate-200 rounded-lg px-2 py-1.5 hover:bg-slate-50"><Download className="w-3.5 h-3.5" /> PNG</button>
         </div>
       </div>
-      <div ref={containerRef} style={{ height, background: '#f8fafc' }} className="rounded-lg border border-slate-200 w-full" />
+      <div ref={containerRef} style={{ height: fullscreen ? 'calc(100vh - 160px)' : height, background: '#f8fafc' }} className="rounded-lg border border-slate-200 w-full" />
       {hover && (
         <div className="pointer-events-none absolute z-10 bg-slate-900 text-white text-[11px] rounded-md px-2.5 py-1.5 shadow-lg" style={{ left: hover.x, top: hover.y }}>
           {hover.text}
