@@ -9,10 +9,12 @@ import {
 } from '@/lib/temporal/analysis';
 import { AI_CATEGORIES } from '@/lib/constants';
 import { exportAsCSV } from '@/lib/exporter';
+import NetworkGraphView, { type NetworkSelection } from '@/components/NetworkGraphView';
+import { buildPhaseNetwork, buildActivityNetwork, buildAiNetwork, supportingTransitions, classifyEvent, type NetworkGraph, type NetworkDataset } from '@/lib/temporal/network';
 import type { EventLog, Session, AIInteraction, ScrutinyResponse } from '@/lib/types';
 
 interface Scoped { sessions: Session[]; events: EventLog[]; interactions: AIInteraction[]; scrutiny: ScrutinyResponse[]; approved: Map<string, number> }
-interface Computed { durations: Map<string, SessionDurations>; intervals: Map<string, SessionIntervals>; eventsBySession: Map<string, EventLog[]> }
+interface Computed { durations: Map<string, SessionDurations>; intervals: Map<string, SessionIntervals>; eventsBySession: Map<string, EventLog[]>; netData: NetworkDataset }
 
 const AI_LABELS: Record<string, string> = Object.fromEntries(AI_CATEGORIES.map((c) => [c.key, c.label]));
 
@@ -62,6 +64,11 @@ export default function TemporalAnalysis() {
   const [seqMinLen, setSeqMinLen] = useState(2);
   const [seqMaxLen, setSeqMaxLen] = useState(4);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [minEdgeWeight, setMinEdgeWeight] = useState(1);
+  const [edgeProbabilityMode, setEdgeProbabilityMode] = useState(false);
+  const [netSelection, setNetSelection] = useState<NetworkSelection | null>(null);
+  const [netSource, setNetSource] = useState<'phase' | 'activity' | 'ai'>('phase');
+  const [aiNetOption, setAiNetOption] = useState<string>('all');
 
   useEffect(() => { void reload(); }, []);
   async function reload() {
@@ -125,8 +132,12 @@ export default function TemporalAnalysis() {
     const transitions = computeTransitionMatrix(eventsBySession);
     const patterns = discoverSequences(tokensBySession, seqMinLen, seqMaxLen, minFreq);
     const bandComparison = compareByGradeBand(scoped.sessions, data!.assessments, durations, intervals);
-    return { eventsBySession, durations, intervals, tokensBySession, transitions, patterns, bandComparison };
-  }, [scoped, seqMinLen, seqMaxLen, minFreq]);
+    const netData: NetworkDataset = { events: scoped.events, interactions: scoped.interactions, scrutiny: scoped.scrutiny };
+    const phaseNet = buildPhaseNetwork(netData);
+    const activityNet = buildActivityNetwork(netData);
+    const aiNet = buildAiNetwork({ events: scoped.events, interactions: scoped.interactions, scrutiny: scoped.scrutiny, labels: AI_LABELS, optionFilter: aiNetOption === 'all' ? null : aiNetOption });
+    return { eventsBySession, durations, intervals, tokensBySession, transitions, patterns, bandComparison, phaseNet, activityNet, aiNet, netData };
+  }, [scoped, seqMinLen, seqMaxLen, minFreq, aiNetOption]);
 
   if (loading && !data) return <div className="max-w-7xl mx-auto px-4 py-8 text-slate-400 text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Loading research data...</div>;
 
@@ -194,7 +205,7 @@ export default function TemporalAnalysis() {
           </label>
         </div>
         <div className="flex items-center justify-between mt-3">
-          <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-xs text-slate-500 hover:text-slate-900 underline">Clear filters</button>
+          <button onClick={() => { setFilters(EMPTY_FILTERS); setNetSelection(null); }} className="text-xs text-slate-500 hover:text-slate-900 underline">Clear filters</button>
           {scoped && <span className="text-xs text-slate-400">{scoped.sessions.length} sessions · {scoped.events.length} events · {scoped.interactions.length} AI requests in scope</span>}
         </div>
       </div>
@@ -424,6 +435,62 @@ export default function TemporalAnalysis() {
             </div>
           </Section>
 
+          {/* ---------- 6. Interactive Networks ---------- */}
+          <Section n={6} title="Interactive Learning Networks" subtitle="Force-directed maps of observed activity. Every node is a recorded event category, every arrow an observed chronological transition between consecutive events in a session. Network proximity is a layout artefact, not evidence of learning effectiveness.">
+            <div className="flex flex-wrap items-center gap-4 mb-4">
+              <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+                {([['phase', 'Phase network'], ['activity', 'Activity network'], ['ai', 'AI pathway network']] as const).map(([key, lbl]) => (
+                  <button key={key} onClick={() => { setNetSource(key); setNetSelection(null); }} className={`px-3 py-1.5 font-medium transition-colors ${netSource === key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{lbl}</button>
+                ))}
+              </div>
+              <label className="text-xs text-slate-500">Min edge weight
+                <input type="number" min={1} max={50} value={minEdgeWeight} onChange={(e) => setMinEdgeWeight(Math.max(1, Number(e.target.value)))} className="ml-2 w-16 border border-slate-300 rounded-lg px-2 py-1 text-sm" />
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-slate-500">
+                <input type="checkbox" checked={edgeProbabilityMode} onChange={(e) => setEdgeProbabilityMode(e.target.checked)} className="rounded" />
+                Show normalised probabilities instead of raw counts
+              </label>
+              {netSource === 'ai' && (
+                <label className="text-xs text-slate-500">Inspect AI option
+                  <select value={aiNetOption} onChange={(e) => { setAiNetOption(e.target.value); setNetSelection(null); }} className="ml-2 border border-slate-300 rounded-lg px-2 py-1 text-sm">
+                    <option value="all">All options</option>
+                    {AI_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+            {(() => {
+              const net: NetworkGraph = netSource === 'phase' ? computed.phaseNet : netSource === 'activity' ? computed.activityNet : computed.aiNet;
+              const emptyMsg = netSource === 'ai' && scoped.interactions.length === 0
+                ? 'No AI requests in scope. Sessions without AI assistance are a valid outcome — the AI pathway network is empty by observation, not by error.'
+                : net.nodes.length === 0 ? 'No recorded activity in scope for this network.' : null;
+              if (emptyMsg) return <EmptyState>{emptyMsg}</EmptyState>;
+              return (
+                <div className="grid lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2">
+                    <NetworkGraphView
+                      graph={net}
+                      selection={netSelection}
+                      onSelect={setNetSelection}
+                      minEdgeWeight={minEdgeWeight}
+                      probabilityMode={edgeProbabilityMode}
+                      filename={`temporal_${netSource}_network`}
+                    />
+                  </div>
+                  <NetworkInspector
+                    net={net}
+                    selection={netSelection}
+                    scoped={scoped}
+                    computed={computed}
+                    netSource={netSource}
+                    onClose={() => setNetSelection(null)}
+                  />
+                </div>
+              );
+            })()}
+            <p className="text-[11px] text-slate-400 mt-3">Legend — phase network: nodes are the five PAUSE phases (Plan blue, Attempt green, Use AI orange, Scrutinise purple, Evaluate red; archived Edit shown separately). Activity network: nodes are concrete recorded activities. AI pathway network: orange option nodes carry the exact AI assistance labels stored in the database. Edge labels show the raw transition count or row-normalised probability. Frequencies and counts here are computed from the same event set as the tables above, so the network and table views agree under identical filters.</p>
+          </Section>
+
           {/* ---------- Exports ---------- */}
           <Section n={0} title="Research Data Exports" subtitle={`CSV exports matching the current filters. Analysis version ${ANALYSIS_VERSION}; exported ${new Date().toISOString().slice(0, 10)}. See the data dictionary note below for field definitions.`}>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -602,3 +669,115 @@ function gradeBandFor(mark: number): string {
 }
 
 // Scoped and Computed interfaces declared above the default export.
+
+function NetworkInspector({ net, selection, scoped, computed, netSource, onClose }: {
+  net: NetworkGraph;
+  selection: NetworkSelection | null;
+  scoped: Scoped;
+  computed: Computed;
+  netSource: 'phase' | 'activity' | 'ai';
+  onClose: () => void;
+}) {
+  const node = selection?.type === 'node' ? net.nodes.find((n) => n.id === selection.id) ?? null : null;
+  const edge = selection?.type === 'edge' ? net.edges.find((e) => e.id === selection.id) ?? null : null;
+
+  const labelFor = (id: string) => net.nodes.find((n) => n.id === id)?.label ?? id;
+  const resolveUnit = (e: EventLog): string | null => {
+    if (netSource === 'phase') return e.pause_phase ?? null;
+    if (netSource === 'activity') return classifyEvent(e);
+    return null; // AI-network edges splice interactions, so event-only resolution doesn't apply
+  };
+
+  function exportEdgeCsv() {
+    if (!edge) return;
+    let rows: Record<string, unknown>[];
+    if (netSource === 'ai') {
+      // Supporting AI-network transitions: rebuild per-session unit streams.
+      const bySession = new Map<string, { unit: string; ts: string; participantId: string }[]>();
+      for (const i of scoped.interactions) {
+        if (!bySession.has(i.session_id)) bySession.set(i.session_id, []);
+        bySession.get(i.session_id)!.push({ unit: `AI:${i.category}`, ts: i.created_at, participantId: i.participant_id });
+        const sc = scoped.scrutiny.filter((s) => s.ai_interaction_id === i.id);
+        for (const s of sc) bySession.get(i.session_id)!.push({ unit: 'SCRUTINY', ts: s.created_at, participantId: i.participant_id });
+      }
+      for (const e of scoped.events) {
+        const u = classifyEvent(e);
+        if (!u) continue;
+        if (!bySession.has(e.session_id)) bySession.set(e.session_id, []);
+        bySession.get(e.session_id)!.push({ unit: u, ts: e.timestamp, participantId: e.participant_id });
+      }
+      rows = [];
+      for (const [sessionId, list] of bySession) {
+        list.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+        let prev: { unit: string; ts: string; participantId: string } | null = null;
+        for (const st of list) {
+          if (st.unit === prev?.unit) continue;
+          if (prev && prev.unit === edge.source && st.unit === edge.target) {
+            rows.push({ session_id: sessionId, participant_id: st.participantId, from_unit: edge.source, to_unit: edge.target, from_timestamp: prev.ts, to_timestamp: st.ts });
+          }
+          prev = st;
+        }
+      }
+    } else {
+      rows = supportingTransitions(computed.netData, edge.source, edge.target, resolveUnit)
+        .map((r) => ({ session_id: r.sessionId, participant_id: r.participantId, from_unit: edge.source, to_unit: edge.target, from_timestamp: r.fromTs, to_timestamp: r.toTs }));
+    }
+    exportAsCSV(rows, `temporal_network_edge_${edge.source}_${edge.target}`.replace(/[^a-zA-Z0-9_.]/g, '-'));
+  }
+
+  const supporting = edge
+    ? (netSource === 'ai' ? [] : supportingTransitions(computed.netData, edge.source, edge.target, resolveUnit).slice(0, 12))
+    : [];
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-xs">
+      {!selection && (
+        <div className="text-slate-400">
+          <p className="font-medium text-slate-500 mb-1">Inspector</p>
+          Click a node to see its recorded event frequency, or an edge to inspect the underlying transitions. Drag nodes to rearrange; scroll to zoom.
+        </div>
+      )}
+      {node && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: node.color }} />
+              <span className="font-semibold text-slate-800">{node.label}</span>
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-700">clear</button>
+          </div>
+          <dl className="space-y-1 text-slate-600">
+            <div className="flex justify-between"><dt>Recorded events in node</dt><dd className="font-mono">{node.frequency}</dd></div>
+            <div className="flex justify-between"><dt>Node type</dt><dd>{node.kind === 'ai_option' ? 'AI assistance option' : node.kind}</dd></div>
+            <div className="flex justify-between"><dt>Outgoing transitions</dt><dd className="font-mono">{net.edges.filter((e) => e.source === node.id).reduce((s, e) => s + e.weight, 0)}</dd></div>
+            <div className="flex justify-between"><dt>Incoming transitions</dt><dd className="font-mono">{net.edges.filter((e) => e.target === node.id).reduce((s, e) => s + e.weight, 0)}</dd></div>
+          </dl>
+        </div>
+      )}
+      {edge && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-semibold text-slate-800">{labelFor(edge.source)} → {labelFor(edge.target)}</span>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-700">clear</button>
+          </div>
+          <dl className="space-y-1 text-slate-600 mb-3">
+            <div className="flex justify-between"><dt>Observed transitions</dt><dd className="font-mono">{edge.weight}</dd></div>
+            <div className="flex justify-between"><dt>Probability (of outgoing from {labelFor(edge.source)})</dt><dd className="font-mono">{(edge.probability * 100).toFixed(1)}%</dd></div>
+          </dl>
+          {supporting.length > 0 && (
+            <>
+              <p className="font-medium text-slate-500 mb-1">Supporting sequences (first {supporting.length}):</p>
+              <ul className="space-y-0.5 max-h-40 overflow-y-auto mb-2">
+                {supporting.map((r, k) => (
+                  <li key={k} className="text-slate-500"><span className="font-mono">{r.participantId}</span> · {new Date(r.fromTs).toLocaleString()} → {new Date(r.toTs).toLocaleTimeString()}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {netSource === 'ai' && <p className="text-slate-400 mb-2">For the AI pathway network, sequences are reconstructed from merged AI-interaction and event timestamps (see export for the full list).</p>}
+          <button onClick={exportEdgeCsv} className="flex items-center gap-1.5 border border-slate-300 bg-white rounded-lg px-2.5 py-1.5 hover:bg-slate-100"><Download className="w-3.5 h-3.5" /> Export supporting transitions (CSV)</button>
+        </div>
+      )}
+    </div>
+  );
+}
