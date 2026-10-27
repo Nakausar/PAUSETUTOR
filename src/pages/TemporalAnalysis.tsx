@@ -271,7 +271,7 @@ export default function TemporalAnalysis() {
               {advSub === 'sequences' && <SequencesSub computed={computed} minFreq={minFreq} setMinFreq={setMinFreq} seqMinLen={seqMinLen} setSeqMinLen={setSeqMinLen} seqMaxLen={seqMaxLen} setSeqMaxLen={setSeqMaxLen} />}
               {advSub === 'clustering' && <NotImplementedSub title="Sequence Clustering" description="Cluster-based grouping of learning pathways (e.g. k-medoids or hierarchical clustering over sequence distance matrices) is not yet implemented. No synthetic clusters are shown." />}
               {advSub === 'process' && <NotImplementedSub title="Process Mining" description="Formal process-mining discovery (e.g. alpha/heuristics miner petri-net induction) is not yet implemented. The Frequent Sequences and Network views provide descriptive approximations only." />}
-              {advSub === 'performance' && <PerformanceSub scoped={scoped} computed={computed} />}
+              {advSub === 'performance' && <PerformanceSub computed={computed} />}
               {advSub === 'timing' && <TimingSub scoped={scoped} computed={computed} sort={timingSort} setSort={setTimingSort} />}
               {advSub === 'tables' && <TransitionTablesSub computed={computed} />}
               {advSub === 'exports' && <ExportsSub scoped={scoped} computed={computed} />}
@@ -664,7 +664,7 @@ function SequencesSub({ computed, minFreq, setMinFreq, seqMinLen, setSeqMinLen, 
   );
 }
 
-function PerformanceSub({ scoped, computed }: { scoped: Scoped; computed: Computed }) {
+function PerformanceSub({ computed }: { computed: Computed }) {
   return (
     <Section title="Pathway & Performance Comparisons" subtitle="Temporal metrics by approved grade band. Only researcher-approved marks are used; ungraded work is excluded, never counted as zero. No causal claim is made.">
       <table className="text-xs w-full max-w-4xl">
@@ -847,13 +847,6 @@ function DataQualityPanel({ report, onClose }: { report: DataQualityReport; onCl
 
 /* ================= Shared pieces ================= */
 
-function medianOf(arr: number[]): number | null {
-  if (!arr.length) return null;
-  const s = arr.slice().sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-}
-
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-slate-50 rounded-lg p-3">
@@ -1021,7 +1014,19 @@ function gradeBandFor(mark: number): string {
 }
 
 interface Scoped { sessions: Session[]; events: EventLog[]; interactions: AIInteraction[]; scrutiny: ScrutinyResponse[]; approved: Map<string, number> }
-interface Computed { durations: Map<string, SessionDurations>; intervals: Map<string, SessionIntervals>; eventsBySession: Map<string, EventLog[]>; netData: NetworkDataset }
+interface Computed {
+  durations: Map<string, SessionDurations>;
+  intervals: Map<string, SessionIntervals>;
+  eventsBySession: Map<string, EventLog[]>;
+  tokensBySession: Map<string, { tokens: StepToken[]; participantId: string }>;
+  transitions: ReturnType<typeof computeTransitionMatrix>;
+  patterns: ReturnType<typeof discoverSequences>;
+  bandComparison: ReturnType<typeof compareByGradeBand>;
+  phaseNet: NetworkGraph;
+  activityNet: NetworkGraph;
+  aiNet: NetworkGraph;
+  netData: NetworkDataset;
+}
 
 function NetworkInspector({ net, selection, scoped, computed, netSource, onClose }: {
   net: NetworkGraph;
