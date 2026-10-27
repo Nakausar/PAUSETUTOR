@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowRight, BarChart3, CheckCircle2, ClipboardCheck, Download,
+  AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Download,
   Filter, Layers, ListChecks, RefreshCw, Search, ShieldCheck, X,
 } from 'lucide-react';
-import ThreePanelTab from './ThreePanelTab';
 import { loadResearchData, filterBundle, hasActiveFilters, EMPTY_FILTERS, type ResearchBundle, type ResearchFilters } from '@/lib/researchData';
 import { findIndicator } from '@/lib/researchIndicators';
 import { RESEARCH_QUESTIONS, dataQuality, sessionIndicatorRows } from '@/lib/researchQuestions';
 import { CardHeader, EmptyChart } from '@/components/charts';
 import { buildSessionTrace, rqDataset } from '@/lib/researchTraces';
 import { exportAsCSV } from '@/lib/exporter';
+import type { Assessment } from '@/lib/types';
 
 const TABS = [
-  { key: 'overview', label: 'Three-Panel Dashboard', icon: BarChart3 },
+  { key: 'overview', label: 'Overview', icon: ClipboardCheck },
   { key: 'review', label: 'Assessment Review', icon: ClipboardCheck },
   { key: 'traces', label: 'Participant Learning Traces', icon: Layers },
   { key: 'rq', label: 'Research Question Explorer', icon: Search },
@@ -45,8 +45,8 @@ export default function ResearcherDashboard() {
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
           <p className="text-xs font-semibold text-amber-600 uppercase tracking-widest">Research platform</p>
-          <h1 className="text-2xl font-bold text-slate-900 mt-1">PAUSE learning analytics</h1>
-          <p className="text-sm text-slate-500 mt-1">Descriptive analytics for engagement, programming assessment and metacognitive process — no causal or predictive claims.</p>
+          <h1 className="text-2xl font-bold text-slate-900 mt-1">PAUSE AI Tutor</h1>
+          <p className="text-sm text-slate-500 mt-1">Assignment grading, feedback and research data — learning analytics visualisations have been removed from the dashboards.</p>
         </div>
         <button onClick={() => void reload()} className="flex items-center gap-1.5 text-sm border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50"><RefreshCw className="w-4 h-4" /> Refresh</button>
       </div>
@@ -66,7 +66,7 @@ export default function ResearcherDashboard() {
         })}
       </div>
 
-      {tab === 'overview' && <div className="overflow-x-auto -mx-4 px-4"><ThreePanelTab bundle={filtered} /></div>}
+      {tab === 'overview' && <OverviewTab bundle={filtered} />}
       {tab === 'review' && <AssessmentReviewTab bundle={filtered} />}
       {tab === 'traces' && <TracesTab bundle={filtered} />}
       {tab === 'rq' && <RQExplorerTab bundle={filtered} />}
@@ -123,7 +123,75 @@ function ResearchFiltersBar({ bundle, filters, setFilters }: { bundle: ResearchB
   );
 }
 
-/* ------------------------- Panel helpers ------------------------- */
+/* ------------------------- Tab 1: Simple overview + grading ------------------------- */
+
+function StatTile({ label, value, accent = false }: { label: string; value: string | number; accent?: boolean }) {
+  return (
+    <div className={`bg-white rounded-xl border p-5 ${accent ? 'border-blue-200' : 'border-slate-200'}`}>
+      <div className={`text-sm font-medium ${accent ? 'text-blue-700' : 'text-slate-500'}`}>{label}</div>
+      <div className="text-3xl font-bold text-slate-900 mt-1">{value}</div>
+    </div>
+  );
+}
+
+function OverviewTab({ bundle }: { bundle: ResearchBundle }) {
+  const students = bundle.participants.length;
+  const sessions = bundle.sessions.length;
+  const completed = bundle.sessions.filter((s) => s.status === 'completed').length;
+  const approved = bundle.assessments.filter((a) => a.status === 'approved' && a.approved_mark !== null);
+  const pending = bundle.assessments.filter((a) => a.status === 'pending');
+  const avgApproved = approved.length ? Math.round(approved.reduce((s, a) => s + (a.approved_mark ?? 0), 0) / approved.length) : null;
+
+  const rows = bundle.assessments
+    .map((a) => ({ a, session: bundle.sessions.find((s) => s.id === a.session_id) }))
+    .sort((x, y) => (x.a.status === y.a.status ? (y.a.updated_at ?? '').localeCompare(x.a.updated_at ?? '') : x.a.status === 'pending' ? -1 : 1));
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <StatTile label="Total students" value={students} />
+        <StatTile label="Total assigned tasks" value={sessions} accent />
+        <StatTile label="Completed submissions" value={completed} />
+        <StatTile label="Awaiting grading" value={pending.length} />
+        <StatTile label="Average approved grade" value={avgApproved !== null ? `${avgApproved}/100` : '—'} />
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <CardHeader title="Assignment grading and feedback" subtitle="AI drafts, researcher sub-scores (correctness 40 / approach 20 / quality 20 / testing 20), approval state and timestamps. Unapproved rows are never visible to students." />
+        {rows.length === 0 ? <EmptyChart message="No assessments in scope." /> : (
+          <div className="overflow-x-auto">
+            <table className="text-xs w-full">
+              <thead className="text-slate-500"><tr className="text-left">
+                {['participant', 'task', 'state', 'AI draft', 'rubric (C/A/Q/T)', 'approved', 'rubric total', 'approved at', ''].map((h) => <th key={h} className="py-2 px-2 border-b border-slate-100 font-medium whitespace-nowrap">{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {rows.map(({ a, session }) => (
+                  <tr key={a.id} className="text-slate-700">
+                    <td className="py-2 px-2 font-mono">{a.participant_id}</td>
+                    <td className="py-2 px-2 max-w-40 truncate">{session?.task_title ?? 'Task'}</td>
+                    <td className="py-2 px-2"><span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${a.status === 'approved' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{a.status}</span></td>
+                    <td className="py-2 px-2">{a.ai_suggested_mark ?? '—'}</td>
+                    <td className="py-2 px-2 font-mono">{[a.approved_correctness, a.approved_approach, a.approved_quality, a.approved_testing].map((v) => v ?? '–').join('/')}</td>
+                    <td className="py-2 px-2 font-bold">{a.approved_mark ?? '—'}</td>
+                    <td className="py-2 px-2">{rubricTotals(a) ?? '—'}</td>
+                    <td className="py-2 px-2 text-slate-400">{a.approved_at ? new Date(a.approved_at).toLocaleString() : '—'}</td>
+                    <td className="py-2 px-2"><Link to={`/researcher/session/${a.session_id}/assessment`} className="text-blue-600 hover:text-blue-800 underline">review</Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <p className="text-[11px] text-slate-400">AI suggestion drafts, researcher-approved values and approval timestamps are stored as separate columns, so the record of what the AI proposed and what the researcher published is always preserved.</p>
+    </div>
+  );
+}
+
+function rubricTotals(a: Assessment): number | null {
+  const parts = [a.approved_correctness, a.approved_approach, a.approved_quality, a.approved_testing];
+  return parts.every((p) => p !== null) ? parts.reduce((s, v) => s + (v ?? 0), 0) : null;
+}
 
 /* ------------------------- Tab 2: Assessment Review ------------------------- */
 
@@ -131,10 +199,6 @@ function AssessmentReviewTab({ bundle }: { bundle: ResearchBundle }) {
   const rows = bundle.assessments
     .map((a) => ({ a, session: bundle.sessions.find((s) => s.id === a.session_id) }))
     .sort((x, y) => (x.a.status === y.a.status ? (y.a.updated_at ?? '').localeCompare(x.a.updated_at ?? '') : x.a.status === 'pending' ? -1 : 1));
-  const rubricTotals = (a: typeof rows[number]['a']) => {
-    const parts = [a.approved_correctness, a.approved_approach, a.approved_quality, a.approved_testing];
-    return parts.every((p) => p !== null) ? parts.reduce((s, v) => s + (v ?? 0), 0) : null;
-  };
   return (
     <div className="space-y-5">
       <div className="bg-white border border-slate-200 rounded-xl p-5">
