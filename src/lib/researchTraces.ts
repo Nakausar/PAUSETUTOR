@@ -92,10 +92,10 @@ export function buildSessionTrace(bundle: ResearchBundle, sessionId: string): Se
     }
   }
 
-  // 4. Revised code after scrutiny (first snapshot in/after scrutinise phase)
+  // 4. Revised code after scrutiny (first snapshot in/after scrutinise phase; 'edit' is the archived pre-merge name)
   const revisedCode = snapshots.find((s) => s.phase === 'scrutinise' || s.phase === 'edit');
   if (revisedCode) {
-    steps.push({ kind: 'revised_code', label: `Revised code (${revisedCode.phase} phase)`, ts: revisedCode.created_at, participant: session.participant_id, refId: revisedCode.id, detail: codePreview(revisedCode) });
+    steps.push({ kind: 'revised_code', label: `Revised code (${revisedCode.phase === 'edit' ? 'scrutinise (archived edit)' : revisedCode.phase} phase)`, ts: revisedCode.created_at, participant: session.participant_id, refId: revisedCode.id, detail: codePreview(revisedCode) });
   }
 
   // 5. Final outcome

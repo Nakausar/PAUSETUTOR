@@ -5,7 +5,6 @@ export const PHASES: { key: PausePhase; letter: string; label: string; full: str
   { key: 'attempt', letter: 'A', label: 'Attempt', full: 'Attempt' },
   { key: 'use_ai', letter: 'U', label: 'Use AI', full: 'Use AI Strategically' },
   { key: 'scrutinise', letter: 'S', label: 'Scrutinise', full: 'Scrutinise' },
-  { key: 'edit', letter: 'E', label: 'Edit', full: 'Edit' },
   { key: 'evaluate', letter: 'E', label: 'Evaluate', full: 'Evaluate' },
 ];
 
@@ -14,7 +13,9 @@ export const PHASE_LABELS: Record<PausePhase, string> = {
   attempt: 'Attempt',
   use_ai: 'Use AI Strategically',
   scrutinise: 'Scrutinise',
-  edit: 'Edit',
+  // Historical label — the Edit phase was merged into Scrutinise; kept so
+  // sessions and events recorded before the change still render correctly.
+  edit: 'Scrutinise (Edit, archived)',
   evaluate: 'Evaluate',
   completed: 'Completed',
 };

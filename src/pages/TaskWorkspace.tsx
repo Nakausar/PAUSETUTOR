@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Check, ChevronRight, Code2, Lightbulb, Loader2, MessageSquare, Play, Save, Send, ShieldCheck, Sparkles, Terminal, TestTube2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, ChevronRight, Code2, Lightbulb, Loader2, MessageSquare, Play, Save, Send, ShieldCheck, Sparkles, Terminal } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
@@ -135,8 +135,10 @@ export default function TaskWorkspace() {
     setLoading(false);
   }
 
-  // Controlled flexible navigation: Plan → meaningful Attempt gate the workflow; Scrutinise needs an AI response to evaluate.
-  // All conditions are monotonic (once true they stay true), so unlocked phases never re-lock before completion.
+  // Controlled flexible navigation: Plan → meaningful Attempt gate the workflow; Evaluate needs plan + attempt.
+  // Scrutinise is available once an AI response exists — but is never mandatory: a student who does not use AI
+  // goes straight from Attempt to Evaluate. All conditions are monotonic (once true they stay true), so unlocked
+  // phases never re-lock before completion.
   function enabledPhases(): Set<PausePhase> {
     const planSubmitted = originalPlan !== null || latestPlan !== null;
     const meaningfulAttempt = Boolean(attempt && attempt.current_code.trim().length > 0);
@@ -144,8 +146,8 @@ export default function TaskWorkspace() {
     const unlocked = new Set<PausePhase>(['plan']);
     if (planSubmitted) unlocked.add('attempt');
     if (planSubmitted && meaningfulAttempt) unlocked.add('use_ai');
+    if (planSubmitted && meaningfulAttempt) unlocked.add('scrutinise');
     if (hasAiResponse) unlocked.add('scrutinise');
-    if (meaningfulAttempt) unlocked.add('edit');
     if (planSubmitted && meaningfulAttempt) unlocked.add('evaluate');
     return unlocked;
   }
@@ -281,7 +283,16 @@ export default function TaskWorkspace() {
     }
     await logEvent({ ...base, eventType: 'SCRUTINISE_SUBMITTED', description: 'Student submitted their scrutiny of the AI response.', metadata: { accuracy_judgment: form.accuracy_judgment, intended_action: form.intended_action, action_taken: action, interaction_number: interactionNumber } });
     await logEvent({ ...base, eventType: action === 'accepted' ? 'AI_SUGGESTION_ACCEPTED' : action === 'modified' ? 'AI_SUGGESTION_MODIFIED' : 'AI_SUGGESTION_REJECTED', description: `Student ${action} the AI suggestion.`, metadata: { test_passed: !runError, interaction_number: interactionNumber } });
-    await transition('edit', 'Scrutiny response saved; continue revising your code.');
+    await transition('evaluate', 'Scrutiny response saved; continue to your final reflection.');
+  }
+
+  // Save the current code as a revision (snapshot + attempt update) without a scrutiny decision —
+  // used inside Scrutinise after modifying code, keeping history without ending the phase.
+  async function saveRevision() {
+    if (!session || !profile) return;
+    if (!code.trim()) { setError('Your code is empty — there is nothing to save as a revision.'); return; }
+    const saved = await saveAttempt(code, 'revision');
+    if (saved) setNotice('Revision saved. Previous versions stay in your code history.');
   }
 
   async function submitReflection() {
@@ -324,7 +335,6 @@ export default function TaskWorkspace() {
   if (attempt?.current_code?.trim()) completedPhases.add('attempt');
   if (aiInteractions.length > 0) completedPhases.add('use_ai');
   if (scrutinies.length > 0) completedPhases.add('scrutinise');
-  if (phase === 'edit' || (scrutinies.length > 0 && attempt)) completedPhases.add('edit');
 
   if (loading) return <div className="max-w-6xl mx-auto px-4 py-10 text-sm text-slate-400">Loading task workspace...</div>;
   if (error && !task) return <div className="max-w-6xl mx-auto px-4 py-10"><div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div></div>;
@@ -340,9 +350,8 @@ export default function TaskWorkspace() {
     {phase === 'plan' && <PlanPhase values={planForm} setValues={setPlanForm} onTextChange={handlePlanTextChange} onSave={savePlan} isRevision={plans.length > 0} originalPlanText={originalPlan?.plan_text ?? null} planVersion={planVersion} />}
     {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} />}
     {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} />}
-    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} onRun={runCode} onSave={saveScrutiny} />}
-    {phase === 'edit' && <EditPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onRequestAI={() => goToPhase('use_ai')} canRequestAI={enabled.has('use_ai')} latestScrutiny={scrutinies[0] ?? null} aiResponse={aiResponse} />}
-    {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('edit')} canGoBack={enabled.has('edit')} />}
+    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={() => goToPhase('evaluate')} onRevise={saveRevision} />}
+    {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('scrutinise')} canGoBack={enabled.has('scrutinise')} />}
   </div>;
 }
 
@@ -387,48 +396,35 @@ function AIPhase({ categories, selected, setSelected, question, setQuestion, bus
   </PhaseCard>;
 }
 
-function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, onRun, onSave }: { interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void }) {
+function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onSkip, onRevise }: { interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void; onSkip: () => void; onRevise: () => void }) {
   const c = phaseAccent('scrutinise');
   const form: ScrutinyForm = selectedResponse ? (forms[selectedResponse.id] ?? emptyScrutinyForm) : emptyScrutinyForm;
   const showCritique = form.accuracy_judgment === 'incorrect';
   const responseNum = selectedResponse ? interactions.length - interactions.findIndex((i) => i.id === selectedResponse.id) : 0;
   const alreadyScrutinised = selectedResponse ? scrutinies.some((s) => s.ai_interaction_id === selectedResponse.id) : false;
   function setAccuracy(next: AccuracyJudgment | '') { if (!selectedResponse) return; setForm(selectedResponse.id, { ...form, accuracy_judgment: next, critique_text: next === 'incorrect' ? form.critique_text : '' }); }
-  return <PhaseCard accent={c} icon={<ShieldCheck />} title="Scrutinise and revise" description="Do not simply accept the AI response. Evaluate it, test it, and decide what to do with it.">
+  return <PhaseCard accent={c} icon={<ShieldCheck />} title="Scrutinise, revise and test" description="Do not simply accept the AI response. Evaluate it, modify your code, test your changes, and record your reasoning. You can also continue here without AI if you have not requested any.">
     {interactions.length > 1 && <div className="mb-4 flex flex-wrap gap-2">{interactions.map((i, idx) => { const num = interactions.length - idx; const active = selectedResponse?.id === i.id; return <button key={i.id} type="button" onClick={() => onSelectResponse(i)} aria-pressed={active} className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${active ? 'border-transparent text-white' : 'border-slate-200 text-slate-600 hover:border-teal-500'}`} style={active ? { backgroundColor: c.accent } : undefined}>{scrutinies.some((s) => s.ai_interaction_id === i.id) ? '✓ ' : ''}Response #{num}</button>; })}</div>}
-    <div className="bg-slate-950 text-slate-100 rounded-lg p-4 text-sm whitespace-pre-wrap leading-6 mb-5"><div className="flex items-center gap-2 text-xs font-semibold text-teal-300 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response #{responseNum} — {selectedResponse ? AI_CATEGORY_LABELS[selectedResponse.category] : ''}</div>{selectedResponse?.response ?? 'Select an AI response above.'}</div>
+    {selectedResponse && <>
+    <div className="bg-slate-950 text-slate-100 rounded-lg p-4 text-sm whitespace-pre-wrap leading-6 mb-5"><div className="flex items-center gap-2 text-xs font-semibold text-teal-300 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response #{responseNum} — {selectedResponse ? AI_CATEGORY_LABELS[selectedResponse.category] : ''}</div>{selectedResponse.response}</div>
     <div className="space-y-6 mb-5">
       <div><span className="block text-sm font-medium text-slate-700 mb-2">How accurate do you think the AI response is?</span><div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">{ACCURACY_JUDGMENT_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => setAccuracy(option.key)} aria-pressed={form.accuracy_judgment === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.accuracy_judgment === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.accuracy_judgment === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
       <div><span className="block text-sm font-medium text-slate-700 mb-2">What will you do?</span><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{INTENDED_ACTION_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => selectedResponse && setForm(selectedResponse.id, { ...form, intended_action: option.key })} aria-pressed={form.intended_action === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.intended_action === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.intended_action === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
       {showCritique && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What do you think is wrong?</span><textarea value={form.critique_text} onChange={(e) => selectedResponse && setForm(selectedResponse.id, { ...form, critique_text: e.target.value })} placeholder="Describe what you think the AI got wrong..." rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-teal-500" /></label>}
     </div>
+    </>}
     <div className="grid lg:grid-cols-2 gap-4">
       <div>
-        <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Revised code</span>
-        <textarea value={code} onChange={(e) => setCode(e.target.value)} className="w-full h-64 bg-slate-950 text-slate-100 font-mono text-sm p-4 rounded-lg outline-none border border-slate-800 focus:ring-2 focus:ring-teal-500/60" spellCheck={false} />
+        <div className="flex items-center justify-between mb-1.5"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Your code</span><span className="text-xs text-slate-400">Every save is snapshotted — previous versions are kept</span></div>
+        <textarea value={code} onChange={(e) => setCode(e.target.value)} className="w-full h-64 bg-slate-950 text-slate-100 font-mono text-sm p-4 rounded-lg outline-none resize-y border border-slate-800 focus:ring-2 focus:ring-teal-500/60" spellCheck={false} />
         <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-teal-500" /></label></div>
-        <button onClick={onRun} className="mt-2 flex items-center gap-2 text-sm text-slate-600 hover:text-teal-700"><TestTube2 className="w-4 h-4" /> Test revised code</button>
+        <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running}>Run code</ActionButton><ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onRevise}>Save revision</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton>}<ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton>}</div>
+        {selectedResponse && alreadyScrutinised && <p className="text-xs text-slate-400 mt-3">You already scrutinised this response — saving again updates that record.</p>}
       </div>
       <OutputPanel output={output} error={runError} systemError={systemError} />
     </div>
-    <div className="flex flex-wrap gap-2 mt-5"><ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton><ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton><ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton></div>
-    {alreadyScrutinised && <p className="text-xs text-slate-400 mt-3">You already scrutinised this response — saving again updates that record.</p>}
-  </PhaseCard>;
-}
-
-function EditPhase({ code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onRequestAI, canRequestAI, latestScrutiny, aiResponse }: { code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: () => void; onRequestAI: () => void; canRequestAI: boolean; latestScrutiny: ScrutinyResponse | null; aiResponse: AIInteraction | null }) {
-  const c = phaseAccent('edit');
-  return <PhaseCard accent={c} icon={<Code2 />} title="Edit and revise your code" description="Apply what you learned from scrutinising the AI response. Your changes and runs are recorded.">
-    {latestScrutiny && aiResponse && <div className="mb-4 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3.5"><div className="text-xs font-semibold text-emerald-800 mb-1">Your last scrutiny decision</div><p className="text-xs text-emerald-900/80 leading-5">You marked the AI response as <strong>{latestScrutiny.accuracy_judgment.replace('_', ' ')}</strong> and chose to <strong>{latestScrutiny.intended_action.replace('_', ' ')}</strong>. The response you evaluated:</p><p className="text-xs text-slate-600 mt-1.5 line-clamp-2 leading-5">{aiResponse.response.slice(0, 160)}{aiResponse.response.length > 160 ? '…' : ''}</p></div>}
-    <div className="grid lg:grid-cols-2 gap-4">
-      <div>
-        <div className="flex items-center justify-between mb-1.5"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Python editor</span><span className="text-xs text-slate-400">Revisions are snapshotted</span></div>
-        <textarea value={code} onChange={(e) => setCode(e.target.value)} className="w-full h-80 bg-slate-950 text-slate-100 font-mono text-sm p-4 rounded-lg outline-none resize-y border border-slate-800 focus:ring-2 focus:ring-emerald-500/60" spellCheck={false} />
-        <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500" /></label></div>
-        <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running}>Run code</ActionButton><ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onSave}>Save revision</ActionButton>{canRequestAI && <ActionButton accent={PHASE_COLORS.use_ai} icon={<Sparkles />} variant="secondary" onClick={onRequestAI}>Ask AI again</ActionButton>}</div>
-      </div>
-      <OutputPanel output={output} error={runError} systemError={systemError} />
-    </div>
+    {scrutinies.length > 0 && <div className="border-t border-slate-100 mt-5 pt-4"><div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Your scrutiny decisions so far (before → after)</div><div className="space-y-2 max-h-56 overflow-y-auto">{scrutinies.map((s) => { const changed = (s.code_before ?? '').replace(/\s+/g, ' ').trim() !== (s.code_after ?? '').replace(/\s+/g, ' ').trim(); return <div key={s.id} className="border border-slate-100 rounded-lg px-3 py-2 text-xs"><div className="flex items-center justify-between gap-2"><span className="font-medium text-slate-700">Judged {s.accuracy_judgment?.replace(/_/g, ' ') ?? '—'} · chose to {s.intended_action?.replace(/_/g, ' ') ?? '—'}</span><span className={changed ? 'text-teal-700 font-medium' : 'text-slate-400'}>{changed ? 'code changed' : 'no code change'}</span></div>{changed && <div className="mt-1.5 grid sm:grid-cols-2 gap-2 font-mono text-[11px]"><div className="bg-red-50 rounded p-2 whitespace-pre-wrap line-clamp-4">- {(s.code_before ?? '').slice(0, 200)}</div><div className="bg-emerald-50 rounded p-2 whitespace-pre-wrap line-clamp-4">+ {(s.code_after ?? '').slice(0, 200)}</div></div>}</div>; })}</div></div>}
+    <div className="border-t border-slate-100 mt-5 pt-4"><ActionButton accent={phaseAccent('evaluate')} icon={<ChevronRight />} onClick={onSkip}>Save revisions and continue to Evaluate</ActionButton><p className="text-xs text-slate-400 mt-2">{selectedResponse ? 'You can continue without accepting or rejecting — your evaluation is saved when you press one of the decision buttons.' : 'No AI response in this session — that is fine. Finalise your code here, then continue to Evaluate.'}</p></div>
   </PhaseCard>;
 }
 

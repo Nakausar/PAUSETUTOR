@@ -39,8 +39,16 @@ export function findIndicator(id: string): IndicatorDoc | undefined {
   return INDICATORS.find((i) => i.id === id);
 }
 
-const PAUSE_PHASES = ['plan', 'attempt', 'use_ai', 'scrutinise', 'edit', 'evaluate'] as const;
+// Five-phase workflow. Historical 'edit' events (pre-merge) are analysed as
+// scrutinise, so old sessions stay comparable without rewriting records.
+const PAUSE_PHASES = ['plan', 'attempt', 'use_ai', 'scrutinise', 'evaluate'] as const;
 export type PausePhaseKey = (typeof PAUSE_PHASES)[number];
+
+/** Maps a logged pause_phase onto the five-phase structure; 'edit' folds into 'scrutinise'. */
+export function normalisePhase(phase: string): PausePhaseKey | null {
+  if (phase === 'edit') return 'scrutinise';
+  return (PAUSE_PHASES as readonly string[]).includes(phase) ? (phase as PausePhaseKey) : null;
+}
 
 export function cohortEngagement(b: ResearchBundle) {
   const participants = new Set(b.events.map((e) => e.participant_id)).size || b.sessions.length;
@@ -56,7 +64,7 @@ export function phaseParticipation(b: ResearchBundle) {
   const perSession = new Map<string, Set<PausePhaseKey>>();
   for (const e of b.events) {
     if (!perSession.has(e.session_id)) perSession.set(e.session_id, new Set());
-    const key = PAUSE_PHASES.find((p) => p === e.pause_phase);
+    const key = normalisePhase(e.pause_phase);
     if (key) perSession.get(e.session_id)!.add(key);
   }
   return PAUSE_PHASES.map((phase) => {
