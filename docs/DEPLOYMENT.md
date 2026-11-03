@@ -11,7 +11,11 @@ Use an **EU region** for Supabase (e.g. Frankfurt or Stockholm) so research data
 
 No command-line tools needed.
 
-1. **Database:** Supabase → SQL Editor → New query → paste all of [`supabase/manual/apply_2026-11_updates.sql`](../supabase/manual/apply_2026-11_updates.sql) → Run. Then run the checks at the bottom of that file (researcher accounts).
+1. **Database:** first check whether the project already has the PAUSE tables: Supabase → SQL Editor → run `SELECT count(*) FROM profiles;`
+   * **Error "relation public.profiles does not exist"** (new, empty project): paste all of [`supabase/manual/full_setup.sql`](../supabase/manual/full_setup.sql) into a new query → Run.
+   * **A number** (project already used by Bolt): paste all of [`supabase/manual/apply_2026-11_updates.sql`](../supabase/manual/apply_2026-11_updates.sql) → Run, then run the researcher checks at the bottom of that file.
+
+   Both files run as one transaction, so a failed run changes nothing.
 2. **Auth:** Authentication → Sign In / Providers → Email → turn on **Confirm email**.
 3. **Edge functions:** in GitHub → Settings → Secrets and variables → Actions, add `SUPABASE_ACCESS_TOKEN` (supabase.com → Account → Access Tokens) and `SUPABASE_PROJECT_REF`. Then Actions → **Deploy Supabase edge functions** → Run workflow. Later changes to the functions deploy automatically.
 4. **Secrets:** Supabase → Edge Functions → Secrets: `OPENAI_API_KEY` (and later `ALLOWED_ORIGIN`).

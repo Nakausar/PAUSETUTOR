@@ -1,12 +1,15 @@
 #!/bin/bash
 # Database security check on plain PostgreSQL (no Supabase project needed).
 #
-# 1. Applies the original (Bolt-era) migrations, i.e. the state of an existing project.
-# 2. Applies supabase/manual/apply_2026-11_updates.sql twice (it must be repeatable).
-# 3. Runs queries the way the app sends them (role `authenticated` + JWT claims)
-#    and checks the row-level security and triggers.
+# SETUP=update (default): existing project
+#   1. Applies the original (Bolt-era) migrations, i.e. the state of an existing project.
+#   2. Applies supabase/manual/apply_2026-11_updates.sql twice (it must be repeatable).
+# SETUP=full: new, empty project
+#   1. Applies supabase/manual/full_setup.sql once.
+# Then runs queries the way the app sends them (role `authenticated` + JWT claims)
+# and checks the row-level security and triggers.
 #
-# Usage: PGHOST=localhost PGPORT=5432 PGUSER=postgres bash supabase/tests/security_check.sh
+# Usage: PGHOST=localhost PGPORT=5432 PGUSER=postgres [SETUP=full] bash supabase/tests/security_check.sh
 # The connecting user must be able to create databases. A database named
 # `pause_security_check` is created and dropped.
 set -u
@@ -19,10 +22,15 @@ alive() { $PA -d postgres -tAc "select 1" >/dev/null 2>&1 || { echo "ABORT: data
 alive
 $PA -d postgres -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB" 2>/dev/null || exit 2
 $PA -d $DB -f "$REPO/supabase/tests/supabase_stub.sql" >/dev/null || exit 2
+SETUP="${SETUP:-update}"
+if [ "$SETUP" = full ]; then
+  $PA -d $DB -f "$REPO/supabase/manual/full_setup.sql" >/dev/null 2>"$TMP/full.err" && echo "Full setup on an empty database: OK" || { echo "Full setup: FAILED"; grep -v NOTICE "$TMP/full.err" | head; exit 1; }
+else
 n=0; for f in $(ls $REPO/supabase/migrations/*.sql | sort); do case $(basename $f) in 2026110*) continue;; esac
   if $PA -d $DB -f "$f" >/dev/null 2>"$TMP/mig.err"; then n=$((n+1)); else echo "FAILED original migration $f"; grep -v NOTICE "$TMP/mig.err" | head -3; exit 1; fi; done
 echo "Original Bolt migrations applied: $n"
 for run in 1 2; do $PA -d $DB -f "$REPO/supabase/manual/apply_2026-11_updates.sql" >/dev/null 2>"$TMP/c.err" && echo "Combined update, run $run: OK" || { echo "Combined update, run $run: FAILED"; grep -v NOTICE "$TMP/c.err" | head; exit 1; }; done
+fi
 
 STU=11111111-1111-4111-8111-111111111111; RES=22222222-2222-4222-8222-222222222222
 $P -c "INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ('$STU','student@test.fi','{\"role\":\"researcher\",\"consent_acknowledged\":true}'), ('$RES','researcher@test.fi','{}')" >/dev/null
