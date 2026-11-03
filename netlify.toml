@@ -1,0 +1,37 @@
+# Netlify build settings (picked up automatically when the site is linked to this repo).
+# Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY under Site configuration → Environment variables.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Python runtime (Pyodide): correct type for WebAssembly. Cached for a week:
+# the file names stay the same when the pyodide version changes, so a longer
+# cache could keep students on an old copy after an upgrade.
+[[headers]]
+  for = "/pyodide/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
+
+[[headers]]
+  for = "/pyodide/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
+
+# Built JS/CSS have content hashes in their names, so they can be cached forever.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Basic security headers for every page.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
