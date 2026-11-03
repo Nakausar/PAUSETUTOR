@@ -232,6 +232,11 @@ export interface AIInteraction {
   context_error: string | null;
   context_plan: Record<string, unknown> | null;
   full_solution_requested: boolean;
+  /** Set on follow-up questions: the root interaction of the conversation. */
+  parent_interaction_id?: string | null;
+  turn_index?: number;
+  solution_reason?: string | null;
+  model?: string | null;
   created_at: string;
 }
 

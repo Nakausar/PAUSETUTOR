@@ -102,7 +102,7 @@ async function fetchEventLogs(): Promise<ExportRow[]> {
 }
 
 async function fetchAIInteractions(): Promise<ExportRow[]> {
-  const data = await fetchAllRows('ai_interactions', 'id, participant_id, session_id, category, prompt, response, context_code, context_error, full_solution_requested, model, prompt_hash, prompt_tokens, completion_tokens, is_placeholder, created_at', 'created_at');
+  const data = await fetchAllRows('ai_interactions', 'id, participant_id, session_id, category, prompt, response, context_code, context_error, full_solution_requested, parent_interaction_id, turn_index, solution_reason, model, prompt_hash, prompt_tokens, completion_tokens, is_placeholder, created_at', 'created_at');
   return data.map(flattenRow);
 }
 
