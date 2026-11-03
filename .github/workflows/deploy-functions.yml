@@ -45,4 +45,12 @@ jobs:
           fi
 
       - name: Deploy functions
-        run: npx -y supabase@2.120.0 functions deploy ai-tutor ai-assessor run-python --project-ref "$SUPABASE_PROJECT_REF" --use-api
+        run: |
+          # Accept the ref with stray spaces/newlines, or a pasted dashboard or project URL.
+          REF=$(printf '%s' "$SUPABASE_PROJECT_REF" | tr -d '[:space:]' \
+            | sed -E 's#^https?://##; s#^supabase\.com/dashboard/project/##; s#\.supabase\.co.*$##; s#/.*$##')
+          if ! printf '%s' "$REF" | grep -Eq '^[a-z]{20}$'; then
+            echo "::error::SUPABASE_PROJECT_REF must be the 20-letter project ID (Supabase → Project Settings → General → Project ID). The current value has ${#REF} characters after cleanup."
+            exit 1
+          fi
+          npx -y supabase@2.120.0 functions deploy ai-tutor ai-assessor run-python --project-ref "$REF" --use-api
