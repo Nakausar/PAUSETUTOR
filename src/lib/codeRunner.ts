@@ -21,11 +21,15 @@ export interface RunResult {
 }
 
 /**
- * VITE_CODE_RUNNER = 'browser' (default) runs Python on the student's device
- * with Pyodide and falls back to the server if Python cannot load.
- * VITE_CODE_RUNNER = 'server' always uses the run-python edge function.
+ * VITE_CODE_RUNNER:
+ * - 'browser' (default): run Python on the student's device with Pyodide;
+ *   fall back to the run-python edge function if Python cannot load.
+ * - 'browser-only': as above, but never send code to the server (no fallback).
+ * - 'server': always use the run-python edge function.
  */
-const RUNNER_MODE = (import.meta.env.VITE_CODE_RUNNER as string | undefined) === 'server' ? 'server' : 'browser';
+const RUNNER_SETTING = import.meta.env.VITE_CODE_RUNNER as string | undefined;
+const RUNNER_MODE = RUNNER_SETTING === 'server' ? 'server' : 'browser';
+const ALLOW_SERVER_FALLBACK = RUNNER_SETTING !== 'browser-only';
 let browserUnavailable = false;
 
 const UNAVAILABLE_MESSAGE = 'Code execution service is temporarily unavailable. Please try again.';
@@ -52,6 +56,9 @@ export async function runPythonCode(code: string, stdin: string = '', options: {
       };
     } catch (err) {
       if (!(err instanceof PythonUnavailableError)) throw err;
+      if (!ALLOW_SERVER_FALLBACK) {
+        return { output: 'Python could not start in this browser. Please reload the page or try an up-to-date Chrome, Edge, Firefox or Safari.', error: err.message, exitCode: 1, stdout: '', stderr: err.message, systemError: true, runner: 'browser', timedOut: false, durationMs: null };
+      }
       console.warn('In-browser Python unavailable, falling back to server:', err.message);
       browserUnavailable = true;
     }

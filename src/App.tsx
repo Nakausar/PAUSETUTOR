@@ -1,17 +1,24 @@
+import { lazy, Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import AuthPage from '@/pages/AuthPage';
 import Navbar from '@/components/Navbar';
-import StudentDashboard from '@/pages/StudentDashboard';
-import TaskWorkspace from '@/pages/TaskWorkspace';
-import ResearcherDashboard from '@/pages/ResearcherDashboard';
-import TemporalAnalysis from '@/pages/TemporalAnalysis';
-import TaskManagement from '@/pages/TaskManagement';
-import DataExport from '@/pages/DataExport';
-import SystemSettingsPage from '@/pages/SystemSettingsPage';
-import SessionTimeline from '@/pages/SessionTimeline';
-import SessionAssessment from '@/pages/SessionAssessment';
-import TaskResults from '@/pages/TaskResults';
+// Pages load on demand, so students never download the researcher pages
+// (charts, network graphs) and the first screen appears sooner.
+const StudentDashboard = lazy(() => import('@/pages/StudentDashboard'));
+const TaskWorkspace = lazy(() => import('@/pages/TaskWorkspace'));
+const TaskResults = lazy(() => import('@/pages/TaskResults'));
+const ResearcherDashboard = lazy(() => import('@/pages/ResearcherDashboard'));
+const TemporalAnalysis = lazy(() => import('@/pages/TemporalAnalysis'));
+const TaskManagement = lazy(() => import('@/pages/TaskManagement'));
+const DataExport = lazy(() => import('@/pages/DataExport'));
+const SystemSettingsPage = lazy(() => import('@/pages/SystemSettingsPage'));
+const SessionTimeline = lazy(() => import('@/pages/SessionTimeline'));
+const SessionAssessment = lazy(() => import('@/pages/SessionAssessment'));
+
+function PageLoading() {
+  return <div className="py-24 flex items-center justify-center text-slate-400 text-sm" role="status">Loading...</div>;
+}
 
 function ProtectedRoute({ children, requireRole }: { children: React.ReactNode; requireRole?: 'student' | 'researcher' }) {
   const { profile, loading } = useAuth();
@@ -31,7 +38,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-slate-50">
       <Navbar />
-      <main>{children}</main>
+      <main><Suspense fallback={<PageLoading />}>{children}</Suspense></main>
     </div>
   );
 }

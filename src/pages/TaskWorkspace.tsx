@@ -312,7 +312,8 @@ export default function TaskWorkspace() {
 
   async function saveSnapshot(attemptId: string, nextCode: string, trigger: string, runNumber: number, snapOutput: string, snapError: string | null, snapStdin: string) {
     if (!session || !profile) return;
-    await supabase.from('code_snapshots').insert({ attempt_id: attemptId, session_id: session.id, participant_id: profile.participant_id, code: nextCode, phase, trigger, output: snapOutput, error: snapError, run_number: runNumber, stdin: snapStdin });
+    const { error: snapshotError } = await supabase.from('code_snapshots').insert({ attempt_id: attemptId, session_id: session.id, participant_id: profile.participant_id, code: nextCode, phase, trigger, output: snapOutput, error: snapError, run_number: runNumber, stdin: snapStdin });
+    if (snapshotError) { console.error('Failed to save code snapshot:', snapshotError.message, trigger); return; }
     lastSnapshotCode.current = nextCode;
   }
 
@@ -325,7 +326,8 @@ export default function TaskWorkspace() {
     if (!saved) return false;
     setAttempt(saved); setCode(nextCode);
     await saveSnapshot(saved.id, nextCode, trigger, newRunCount, output, runError, stdin);
-    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType: 'ATTEMPT_SAVED', description: 'Student saved their independent attempt.', metadata: { code_length: nextCode.length, run_count: newRunCount, revision_count: newRevisionCount, stdin, stdout: output, stderr: runError } });
+    const isRevision = trigger === 'revision';
+    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType: isRevision ? 'CODE_REVISED' : 'ATTEMPT_SAVED', description: isRevision ? 'Student saved a code revision.' : 'Student saved their independent attempt.', metadata: { code_length: nextCode.length, run_count: newRunCount, revision_count: newRevisionCount, stdin, stdout: output, stderr: runError } });
     return true;
   }
 
@@ -457,6 +459,15 @@ export default function TaskWorkspace() {
     if (saved) setNotice('Revision saved. Previous versions stay in your code history.');
   }
 
+  /** "Save revisions and continue to Evaluate": saves unsaved code changes as a revision first. */
+  async function saveRevisionAndContinue() {
+    if (code.trim() && code !== lastSnapshotCode.current) {
+      const saved = await saveAttempt(code, 'revision');
+      if (!saved) return;
+    }
+    await goToPhase('evaluate');
+  }
+
   async function submitReflection() {
     if (!session || !profile) return;
     if (!reflectionForm.difficulty || !reflectionForm.perceived_independence || !reflectionForm.perceived_independent_ability || reflectionForm.confidence === null) { setError('Please answer all required reflection questions.'); return; }
@@ -512,7 +523,7 @@ export default function TaskWorkspace() {
     {phase === 'plan' && <PlanPhase values={planForm} setValues={setPlanForm} onTextChange={handlePlanTextChange} onSave={savePlan} isRevision={plans.length > 0} originalPlanText={originalPlan?.plan_text ?? null} planVersion={planVersion} />}
     {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
     {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} onFollowUp={requestFollowUp} followUpBusy={followUpBusy} maxFollowups={gateSettings.max_followups} gate={gateSettings} runCount={attempt?.run_count ?? 0} startedAt={attempt?.started_at ?? null} solutionReason={solutionReason} setSolutionReason={setSolutionReason} />}
-    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={() => goToPhase('evaluate')} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
+    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={saveRevisionAndContinue} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
     {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('scrutinise')} canGoBack={enabled.has('scrutinise')} />}
   </div>;
 }
