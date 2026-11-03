@@ -435,6 +435,12 @@ export default function TaskWorkspace() {
     return true;
   }
 
+  // When each AI response was first shown in Scrutinise (for time-on-scrutiny).
+  const scrutinyStartedAt = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (phase === 'scrutinise' && aiResponse && !scrutinyStartedAt.current[aiResponse.id]) scrutinyStartedAt.current[aiResponse.id] = Date.now();
+  }, [phase, aiResponse]);
+
   function setScrutinyFor(interactionId: string, form: ScrutinyForm) {
     setScrutinyForms((current) => ({ ...current, [interactionId]: form }));
   }
@@ -442,9 +448,13 @@ export default function TaskWorkspace() {
   async function saveScrutiny(action: 'accepted' | 'modified' | 'rejected') {
     if (!session || !profile || !aiResponse) return;
     const form = scrutinyForms[aiResponse.id] ?? emptyScrutinyForm;
-    if (!form.accuracy_judgment || !form.intended_action) { setError('Please rate the AI response and choose what you will do next.'); return; }
-    if (form.accuracy_judgment === 'incorrect' && !form.critique_text.trim()) { setError('Please briefly describe what you think is wrong with the AI response.'); return; }
-    const critique = form.accuracy_judgment === 'incorrect' ? form.critique_text : '';
+    // Only the accuracy judgment is required; intended action and critique are optional
+    // (fewer required fields reduces click-through, and optional answers signal effort).
+    if (!form.accuracy_judgment) { setError('Please rate how accurate you think the AI response is.'); return; }
+    const critique = form.accuracy_judgment !== 'correct' ? form.critique_text.trim() : '';
+    const startedAt = scrutinyStartedAt.current[aiResponse.id];
+    const timeOnScrutinyMs = startedAt ? Date.now() - startedAt : null;
+    const optionalAnswered = { intended_action: Boolean(form.intended_action), critique: critique.length > 0 };
     const interactionNumber = aiInteractions.length - aiInteractions.findIndex((i) => i.id === aiResponse.id);
     const payload = { session_id: session.id, ai_interaction_id: aiResponse.id, participant_id: profile.participant_id, accuracy_judgment: form.accuracy_judgment, intended_action: form.intended_action, critique_text: critique, action_taken: action, revised_code: code, code_before: aiResponse.context_code ?? '', code_after: code, test_result: output, produced_expected_result: !runError };
     const existing = scrutinies.find((s) => s.ai_interaction_id === aiResponse.id);
@@ -456,11 +466,13 @@ export default function TaskWorkspace() {
     setScrutinies((current) => [savedScrutiny, ...current.filter((s) => s.id !== savedScrutiny.id)]);
     const base = { sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'scrutinise' as PausePhase, aiInteractionId: aiResponse.id };
     await logEvent({ ...base, eventType: 'AI_ACCURACY_RATING', description: 'Student judged the accuracy of the AI response.', metadata: { accuracy_judgment: form.accuracy_judgment, interaction_number: interactionNumber } });
-    await logEvent({ ...base, eventType: 'INTENDED_AI_UPTAKE', description: 'Student chose their intended next action with the AI response.', metadata: { intended_action: form.intended_action, interaction_number: interactionNumber } });
-    if (form.accuracy_judgment === 'incorrect') {
+    if (form.intended_action) {
+      await logEvent({ ...base, eventType: 'INTENDED_AI_UPTAKE', description: 'Student chose their intended next action with the AI response.', metadata: { intended_action: form.intended_action, interaction_number: interactionNumber } });
+    }
+    if (critique) {
       await logEvent({ ...base, eventType: 'AI_CRITIQUE_TEXT', description: 'Student described what they thought was wrong in the AI response.', metadata: { critique_length: critique.length, interaction_number: interactionNumber } });
     }
-    await logEvent({ ...base, eventType: 'SCRUTINISE_SUBMITTED', description: 'Student submitted their scrutiny of the AI response.', metadata: { accuracy_judgment: form.accuracy_judgment, intended_action: form.intended_action, action_taken: action, interaction_number: interactionNumber } });
+    await logEvent({ ...base, eventType: 'SCRUTINISE_SUBMITTED', description: 'Student submitted their scrutiny of the AI response.', metadata: { accuracy_judgment: form.accuracy_judgment, intended_action: form.intended_action, action_taken: action, time_on_scrutiny_ms: timeOnScrutinyMs, optional_answered: optionalAnswered, optional_answered_count: Number(optionalAnswered.intended_action) + Number(optionalAnswered.critique), interaction_number: interactionNumber } });
     await logEvent({ ...base, eventType: action === 'accepted' ? 'AI_SUGGESTION_ACCEPTED' : action === 'modified' ? 'AI_SUGGESTION_MODIFIED' : 'AI_SUGGESTION_REJECTED', description: `Student ${action} the AI suggestion.`, metadata: { test_passed: !runError, interaction_number: interactionNumber } });
     await transition('evaluate', 'Scrutiny response saved; continue to your final reflection.');
   }
@@ -633,18 +645,19 @@ function FollowUpBox({ root, count, max, busy, onSend, accent }: { root: AIInter
 function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onSkip, onRevise, tests, thread }: { thread: AIInteraction[]; tests: TestsProps; interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void; onSkip: () => void; onRevise: () => void }) {
   const c = phaseAccent('scrutinise');
   const form: ScrutinyForm = selectedResponse ? (forms[selectedResponse.id] ?? emptyScrutinyForm) : emptyScrutinyForm;
-  const showCritique = form.accuracy_judgment === 'incorrect';
+  // The critique box appears whenever the student doubts the response; it is optional.
+  const showCritique = form.accuracy_judgment !== '' && form.accuracy_judgment !== 'correct';
   const responseNum = selectedResponse ? interactions.length - interactions.findIndex((i) => i.id === selectedResponse.id) : 0;
   const alreadyScrutinised = selectedResponse ? scrutinies.some((s) => s.ai_interaction_id === selectedResponse.id) : false;
-  function setAccuracy(next: AccuracyJudgment | '') { if (!selectedResponse) return; setForm(selectedResponse.id, { ...form, accuracy_judgment: next, critique_text: next === 'incorrect' ? form.critique_text : '' }); }
+  function setAccuracy(next: AccuracyJudgment | '') { if (!selectedResponse) return; setForm(selectedResponse.id, { ...form, accuracy_judgment: next, critique_text: next !== 'correct' ? form.critique_text : '' }); }
   return <PhaseCard accent={c} icon={<ShieldCheck />} title="Scrutinise, revise and test" description="Do not simply accept the AI response. Evaluate it, modify your code, test your changes, and record your reasoning. You can also continue here without AI if you have not requested any.">
     {interactions.length > 1 && <div className="mb-4 flex flex-wrap gap-2">{interactions.map((i, idx) => { const num = interactions.length - idx; const active = selectedResponse?.id === i.id; return <button key={i.id} type="button" onClick={() => onSelectResponse(i)} aria-pressed={active} className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${active ? 'border-transparent text-white' : 'border-slate-200 text-slate-600 hover:border-teal-500'}`} style={active ? { backgroundColor: c.accent } : undefined}>{scrutinies.some((s) => s.ai_interaction_id === i.id) ? '✓ ' : ''}Response #{num}</button>; })}</div>}
     {selectedResponse && <>
     <div className="mb-5"><div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Response #{responseNum}{thread.length > 0 ? ` and ${thread.length} follow-up${thread.length === 1 ? '' : 's'}` : ''}</div><ConversationView root={selectedResponse} thread={thread} tone="dark" /></div>
     <div className="space-y-6 mb-5">
-      <div><span className="block text-sm font-medium text-slate-700 mb-2">How accurate do you think the AI response is?</span><div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">{ACCURACY_JUDGMENT_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => setAccuracy(option.key)} aria-pressed={form.accuracy_judgment === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.accuracy_judgment === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.accuracy_judgment === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
-      <div><span className="block text-sm font-medium text-slate-700 mb-2">What will you do?</span><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{INTENDED_ACTION_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => selectedResponse && setForm(selectedResponse.id, { ...form, intended_action: option.key })} aria-pressed={form.intended_action === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.intended_action === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.intended_action === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
-      {showCritique && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What do you think is wrong?</span><textarea value={form.critique_text} onChange={(e) => selectedResponse && setForm(selectedResponse.id, { ...form, critique_text: e.target.value })} placeholder="Describe what you think the AI got wrong..." data-track="critique" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-teal-500" /></label>}
+      <div><span className="block text-sm font-medium text-slate-700 mb-2">How accurate do you think the AI response is? <span className="text-red-600" aria-hidden="true">*</span><span className="sr-only">(required)</span></span><div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">{ACCURACY_JUDGMENT_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => setAccuracy(option.key)} aria-pressed={form.accuracy_judgment === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.accuracy_judgment === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.accuracy_judgment === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
+      <div><span className="block text-sm font-medium text-slate-700 mb-2">What will you do? <span className="font-normal text-slate-400">(optional)</span></span><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{INTENDED_ACTION_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => selectedResponse && setForm(selectedResponse.id, { ...form, intended_action: option.key })} aria-pressed={form.intended_action === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.intended_action === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.intended_action === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
+      {showCritique && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What do you think is wrong or missing? <span className="font-normal text-slate-400">(optional)</span></span><textarea value={form.critique_text} onChange={(e) => selectedResponse && setForm(selectedResponse.id, { ...form, critique_text: e.target.value })} placeholder="Describe what you think the AI got wrong..." data-track="critique" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-teal-500" /></label>}
     </div>
     </>}
     <div className="grid lg:grid-cols-2 gap-4">
