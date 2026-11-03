@@ -41,7 +41,7 @@ Every learner action is stored as one row in `event_logs`:
 | `CODE_RUN` | Code ran without an error | `run_number`, `stdin`, `stdout`, `stderr`, `exit_code`, `output_length`, `runner` (`browser`/`server`), `timed_out`, `duration_ms` |
 | `ERROR` | Code ran and the student's code raised an error (incl. a 5-second timeout) | same as `CODE_RUN`; `error` holds the traceback |
 | `EXECUTION_ERROR` | Code could not run because of a system problem (not the student's fault) | same as `CODE_RUN`, `system_error: true` |
-| `TEST` | The student ran the task's visible test cases | `passed`, `total`, `all_passed`, `results[]` (per test: `passed`, `timed_out`, `error`), `code`, `code_length`, `system_error` |
+| `TEST` | The student ran the task's visible test cases (after predicting the result) | `passed`, `total`, `all_passed`, `results[]` (per test: `passed`, `timed_out`, `error`), `code`, `code_length`, `system_error`, `prediction` = { `predicted_passed` (0…total), `confidence` (1 = guessing … 5 = certain), `ms_to_predict`, `error` = predicted − actual } |
 | `ATTEMPT_SAVED` | Attempt saved manually or before leaving Attempt | `code_length`, `run_count`, `revision_count`, `stdin`, `stdout`, `stderr` |
 | `CODE_REVISED` | "Save revision" in Scrutinise (before day 5 this was logged as `ATTEMPT_SAVED` and its snapshot was rejected) | as `ATTEMPT_SAVED` |
 | `CODE_AUTOSAVED` | Every 15 s while in Attempt or Scrutinise, if the code changed | `chars_added`, `chars_removed`, `lines_before`, `lines_after`, `code_length`; linked snapshot (trigger `auto`) |
@@ -109,6 +109,7 @@ Limitations: pastes from outside the browser tab (e.g. another AI tool) are `non
 ## Derived exports (Data Export page)
 
 * **TNA sequences (long / wide):** events mapped to 21 actions by `src/lib/tnaCodebook.ts` (codebook version 1). Download **TNA action codebook** for the definition of each action.
+* **Test prediction calibration:** one row per test run with a prediction (monitoring accuracy). `bias` = (predicted − actual) / total, so > 0 is over-confident and < 0 under-confident; `abs_error` = |predicted − actual| / total; plus `confidence`, `ms_to_predict`, `predicted_all_pass`, `actual_all_pass`. Test runs that failed for system reasons, and runs recorded before predictions were introduced, are excluded.
 * **AI reliance per session:** counts and durations per session, plus `final_code_ai_similarity`: the share of identical non-empty lines between the final code and the code blocks in that session's AI responses (0–1).
 
 ### Reading the exports in R

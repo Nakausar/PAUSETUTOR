@@ -141,6 +141,11 @@ export interface SessionRelianceRow {
   idle_count: number;
   idle_total_seconds: number;
   final_code_ai_similarity: number | '';
+  /** Test runs with a prediction, and mean (predicted - actual) / total: > 0 over-confident, < 0 under-confident. */
+  test_predictions: number;
+  mean_prediction_bias: number | '';
+  /** Mean |predicted - actual| / total (0 = perfectly calibrated, 1 = always fully wrong). */
+  mean_prediction_abs_error: number | '';
   codebook_version: number;
 }
 
@@ -196,8 +201,63 @@ export function buildRelianceSummary(
       idle_count: idleEnds.length,
       idle_total_seconds: Math.round(idleEnds.reduce((sum, e) => sum + num(meta(e).idle_ms), 0) / 1000),
       final_code_ai_similarity: similarity,
+      ...calibrationSummary(buildTestCalibration(evs)),
       codebook_version: TNA_CODEBOOK_VERSION,
     });
   }
   return rows;
+}
+
+export interface TestCalibrationRow {
+  session_id: string;
+  participant_id: string;
+  task_id: string;
+  timestamp: string;
+  phase: string;
+  total_tests: number;
+  predicted_passed: number;
+  actual_passed: number;
+  confidence: number | '';
+  ms_to_predict: number | '';
+  /** (predicted - actual) / total: > 0 over-confident, < 0 under-confident. */
+  bias: number;
+  /** |predicted - actual| / total. */
+  abs_error: number;
+  predicted_all_pass: boolean;
+  actual_all_pass: boolean;
+}
+
+/**
+ * Monitoring accuracy: one row per test run where the student predicted how
+ * many tests would pass. Runs that failed for system reasons are excluded.
+ */
+export function buildTestCalibration(events: EventRow[]): TestCalibrationRow[] {
+  const rows: TestCalibrationRow[] = [];
+  const sorted = [...events].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
+  for (const e of sorted) {
+    if (e.event_type !== 'TEST' || !e.session_id) continue;
+    const m = e.metadata ?? {};
+    const p = m.prediction as Record<string, unknown> | undefined;
+    const total = typeof m.total === 'number' ? m.total : 0;
+    if (!p || typeof p.predicted_passed !== 'number' || m.system_error || total <= 0) continue;
+    const actual = typeof m.passed === 'number' ? m.passed : 0;
+    const diff = p.predicted_passed - actual;
+    rows.push({
+      session_id: e.session_id, participant_id: e.participant_id, task_id: e.task_id ?? '', timestamp: e.timestamp, phase: e.pause_phase,
+      total_tests: total, predicted_passed: p.predicted_passed, actual_passed: actual,
+      confidence: typeof p.confidence === 'number' ? p.confidence : '',
+      ms_to_predict: typeof p.ms_to_predict === 'number' ? p.ms_to_predict : '',
+      bias: Math.round((diff / total) * 100) / 100,
+      abs_error: Math.round((Math.abs(diff) / total) * 100) / 100,
+      predicted_all_pass: p.predicted_passed === total,
+      actual_all_pass: actual === total,
+    });
+  }
+  return rows;
+}
+
+function calibrationSummary(rows: TestCalibrationRow[]): Pick<SessionRelianceRow, 'test_predictions' | 'mean_prediction_bias' | 'mean_prediction_abs_error'> {
+  if (rows.length === 0) return { test_predictions: 0, mean_prediction_bias: '', mean_prediction_abs_error: '' };
+  const mean = (xs: number[]) => Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100;
+  return { test_predictions: rows.length, mean_prediction_bias: mean(rows.map((r) => r.bias)), mean_prediction_abs_error: mean(rows.map((r) => r.abs_error)) };
 }

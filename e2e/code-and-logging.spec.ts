@@ -26,11 +26,23 @@ test('student runs Python in the browser and runs the visible tests', async ({ p
   await page.getByRole('button', { name: 'Run code' }).click();
   await expect(page.locator('pre').filter({ hasText: '0\n2\n4\n6' })).toBeVisible({ timeout: 60_000 });
 
+  // Tests only run after the student predicts the outcome.
   await page.getByRole('button', { name: /Run tests \(1\)/ }).click();
+  const prediction = page.getByRole('group', { name: 'Predict the test result' });
+  await expect(prediction.getByText('how many of the 1 test do you expect to pass?')).toBeVisible();
+  const runButton = prediction.getByRole('button', { name: 'Run tests' });
+  await expect(runButton).toBeDisabled();
+  await prediction.getByRole('button', { name: '1', exact: true }).first().click();
+  await expect(runButton).toBeDisabled(); // confidence still missing
+  await prediction.getByRole('button', { name: '4', exact: true }).click();
+  await runButton.click();
   await expect(page.getByText('1 of 1 tests passed')).toBeVisible();
+  await expect(prediction).toHaveCount(0);
 
   await expect.poll(() => db.event_logs.find((e) => e.event_type === 'CODE_RUN')?.metadata).toMatchObject({ runner: 'browser', timed_out: false });
-  await expect.poll(() => db.event_logs.find((e) => e.event_type === 'TEST')?.metadata).toMatchObject({ passed: 1, total: 1, all_passed: true });
+  await expect.poll(() => db.event_logs.find((e) => e.event_type === 'TEST')?.metadata).toMatchObject({
+    passed: 1, total: 1, all_passed: true, prediction: { predicted_passed: 1, confidence: 4, error: 0 },
+  });
 });
 
 test('an infinite loop is stopped and reported as a student error', async ({ page }) => {

@@ -2,7 +2,7 @@
 // Run: npx tsx src/lib/researchLogging.test.ts
 
 import { classifyPaste, diffStats, extractCodeBlocks, lineSimilarity } from './provenance';
-import { buildLongSequences, buildRelianceSummary, buildWideSequences, toAction, type EventRow } from './tnaCodebook';
+import { buildLongSequences, buildRelianceSummary, buildTestCalibration, buildWideSequences, toAction, type EventRow } from './tnaCodebook';
 
 let failures = 0;
 function check(name: string, actual: unknown, expected: unknown) {
@@ -78,6 +78,28 @@ check('reliance: typing estimate excludes pasted characters', r1.chars_typed_est
 check('reliance: final code similarity to AI code', r1.final_code_ai_similarity, 0.67);
 const r2 = reliance.find((r) => r.session_id === 's2')!;
 check('reliance: away time and error runs', [r2.away_count, r2.away_total_seconds, r2.runs, r2.errors, r2.final_code_ai_similarity], [1, 30, 1, 1, '']);
+
+// ---- Test prediction calibration -------------------------------------------
+const testEv = (id: string, t: string, passed: number, total: number, prediction?: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  ev(id, 'c1', t, 'TEST', { passed, total, ...(prediction ? { prediction } : {}), ...extra });
+const calib = buildTestCalibration([
+  testEv('t2', '20', 3, 4, { predicted_passed: 4, confidence: 5, ms_to_predict: 2100 }),   // over-confident by 1 of 4
+  testEv('t1', '10', 1, 4, { predicted_passed: 0, confidence: 2 }),                         // under-confident by 1 of 4
+  testEv('t3', '30', 4, 4, { predicted_passed: 4, confidence: 4 }),                         // exact
+  testEv('t4', '40', 0, 4, { predicted_passed: 4, confidence: 5 }, { system_error: true }), // excluded: system failure
+  testEv('t5', '50', 2, 4),                                                                  // excluded: no prediction (old data)
+]);
+check('calibration: rows ordered, system failures and unpredicted runs excluded', calib.map((r) => r.predicted_passed + '/' + r.actual_passed), ['0/1', '4/3', '4/4']);
+check('calibration: bias and absolute error as share of tests', calib.map((r) => [r.bias, r.abs_error]), [[-0.25, 0.25], [0.25, 0.25], [0, 0]]);
+check('calibration: all-pass flags', calib.map((r) => [r.predicted_all_pass, r.actual_all_pass]), [[false, false], [true, false], [true, true]]);
+check('calibration: confidence and prediction time kept', [calib[1].confidence, calib[1].ms_to_predict, calib[0].ms_to_predict], [5, 2100, '']);
+const relCal = buildRelianceSummary([
+  testEv('t1', '10', 1, 4, { predicted_passed: 0, confidence: 2 }),
+  testEv('t2', '20', 3, 4, { predicted_passed: 4, confidence: 5 }),
+  testEv('t3', '30', 4, 4, { predicted_passed: 4, confidence: 4 }),
+], new Map(), new Map()).find((r) => r.session_id === 'c1')!;
+check('reliance: calibration summary per session', [relCal.test_predictions, relCal.mean_prediction_bias, relCal.mean_prediction_abs_error], [3, 0, 0.17]);
+check('reliance: no predictions → empty calibration', [r2.test_predictions, r2.mean_prediction_bias], [0, '']);
 
 console.log(failures === 0 ? '\nAll research logging tests passed.' : `\n${failures} test(s) FAILED.`);
 if (failures > 0) process.exit(1);

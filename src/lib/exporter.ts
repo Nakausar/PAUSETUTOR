@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { TNA_ACTIONS, TNA_CODEBOOK_VERSION, buildLongSequences, buildRelianceSummary, buildWideSequences, type EventRow } from './tnaCodebook';
+import { TNA_ACTIONS, TNA_CODEBOOK_VERSION, buildLongSequences, buildRelianceSummary, buildTestCalibration, buildWideSequences, type EventRow } from './tnaCodebook';
 
 type ExportCategory =
   | 'participants'
@@ -15,7 +15,8 @@ type ExportCategory =
   | 'tna_long'
   | 'tna_wide'
   | 'session_ai_reliance'
-  | 'tna_codebook';
+  | 'tna_codebook'
+  | 'test_calibration';
 
 interface ExportRow {
   [key: string]: unknown;
@@ -158,6 +159,11 @@ async function fetchSessionReliance(): Promise<ExportRow[]> {
   return buildRelianceSummary(events, finalCode, responses) as unknown as ExportRow[];
 }
 
+async function fetchTestCalibration(): Promise<ExportRow[]> {
+  const events = await fetchAllRows('event_logs', EVENT_COLUMNS, 'timestamp') as unknown as EventRow[];
+  return buildTestCalibration(events) as unknown as ExportRow[];
+}
+
 async function fetchTnaCodebook(): Promise<ExportRow[]> {
   return Object.entries(TNA_ACTIONS).map(([action, definition]) => ({ action, definition, codebook_version: TNA_CODEBOOK_VERSION }));
 }
@@ -177,6 +183,7 @@ const FETCHERS: Record<ExportCategory, () => Promise<ExportRow[]>> = {
   tna_wide: fetchTnaWide,
   session_ai_reliance: fetchSessionReliance,
   tna_codebook: fetchTnaCodebook,
+  test_calibration: fetchTestCalibration,
 };
 
 export async function fetchExportData(category: ExportCategory): Promise<ExportRow[]> {
@@ -210,7 +217,7 @@ export async function exportAllAsZIP() {
   const categories: ExportCategory[] = [
     'participants', 'sessions', 'tasks', 'plans', 'event_logs',
     'ai_interactions', 'scrutiny_responses', 'code_snapshots', 'reflections', 'task_outcomes',
-    'tna_long', 'tna_wide', 'session_ai_reliance', 'tna_codebook',
+    'tna_long', 'tna_wide', 'session_ai_reliance', 'tna_codebook', 'test_calibration',
   ];
   for (const cat of categories) {
     const rows = await fetchExportData(cat);

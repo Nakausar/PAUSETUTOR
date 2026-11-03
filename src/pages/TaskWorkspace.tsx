@@ -83,6 +83,8 @@ export default function TaskWorkspace() {
   const [visitCounts, setVisitCounts] = useState<Partial<Record<PausePhase, number>>>({});
   const [testResults, setTestResults] = useState<TestCaseResult[] | null>(null);
   const [testing, setTesting] = useState(false);
+  // Before each test run the student predicts the outcome (monitoring accuracy).
+  const [predictingSince, setPredictingSince] = useState<number | null>(null);
   const usedAI = aiInteractions.length > 0;
   const originalPlan = plans.length > 0 ? plans[plans.length - 1] : null;
   const latestPlan = plans.length > 0 ? plans[0] : null;
@@ -353,11 +355,19 @@ export default function TaskWorkspace() {
     setRunning(false);
   }
 
-  /** Runs the task's visible test cases against the current code and logs a TEST event. */
-  async function runTests() {
+  /** Opens the prediction question; the tests run once the student has answered it. */
+  function startTestPrediction() {
+    if (running || testing || !(task?.test_cases?.length)) return;
+    setPredictingSince(Date.now());
+  }
+
+  /** Runs the task's visible test cases against the current code and logs a TEST event with the student's prediction. */
+  async function runTests(prediction: TestPrediction) {
     if (!session || !task || !profile || running || testing) return;
     const cases = task.test_cases ?? [];
     if (cases.length === 0) return;
+    const msToPredict = predictingSince ? Date.now() - predictingSince : null;
+    setPredictingSince(null);
     setTesting(true);
     const results = await runTestCases(code, cases);
     setTestResults(results);
@@ -369,6 +379,11 @@ export default function TaskWorkspace() {
       metadata: {
         source: 'visible_tests', passed, total: results.length, all_passed: passed === results.length, system_error: systemFailure,
         code_length: code.length, code,
+        prediction: {
+          predicted_passed: prediction.predictedPassed, confidence: prediction.confidence, ms_to_predict: msToPredict,
+          // Positive = over-confident (expected more passes than happened).
+          error: systemFailure ? null : prediction.predictedPassed - passed,
+        },
         results: results.map((r, i) => ({ index: i, passed: r.passed, timed_out: r.timedOut, error: r.error ? r.error.slice(-300) : null })),
       },
     });
@@ -521,9 +536,9 @@ export default function TaskWorkspace() {
     {notice && <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700">{notice}</div>}
     {error && <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}
     {phase === 'plan' && <PlanPhase values={planForm} setValues={setPlanForm} onTextChange={handlePlanTextChange} onSave={savePlan} isRevision={plans.length > 0} originalPlanText={originalPlan?.plan_text ?? null} planVersion={planVersion} />}
-    {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
+    {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: startTestPrediction, predicting: predictingSince !== null, onPredict: runTests, onCancelPrediction: () => setPredictingSince(null) }} />}
     {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} onFollowUp={requestFollowUp} followUpBusy={followUpBusy} maxFollowups={gateSettings.max_followups} gate={gateSettings} runCount={attempt?.run_count ?? 0} startedAt={attempt?.started_at ?? null} solutionReason={solutionReason} setSolutionReason={setSolutionReason} />}
-    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={saveRevisionAndContinue} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
+    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={saveRevisionAndContinue} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: startTestPrediction, predicting: predictingSince !== null, onPredict: runTests, onCancelPrediction: () => setPredictingSince(null) }} />}
     {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('scrutinise')} canGoBack={enabled.has('scrutinise')} />}
   </div>;
 }
@@ -550,7 +565,8 @@ function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, system
         <div className="flex items-center justify-between mb-1.5"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Python editor</span><span className="text-xs text-slate-400">Your code is snapshotted</span></div>
         <CodeEditor value={code} onChange={setCode} height="20rem" onRun={running ? undefined : onRun} />
         <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." data-track="stdin" rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-violet-500" /></label></div>
-        <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onSave}>Save attempt</ActionButton></div>
+        <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running || tests.predicting}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onSave}>Save attempt</ActionButton></div>
+        <TestPredictionBox tests={tests} />
         <TestResultsPanel results={tests.results} />
       </div>
       <OutputPanel output={output} error={runError} systemError={systemError} />
@@ -636,8 +652,9 @@ function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms
         <div className="flex items-center justify-between mb-1.5"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Your code</span><span className="text-xs text-slate-400">Every save is snapshotted — previous versions are kept</span></div>
         <CodeEditor value={code} onChange={setCode} height="16rem" onRun={running ? undefined : onRun} />
         <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." data-track="stdin" rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-teal-500" /></label></div>
-        <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onRevise}>Save revision</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton>}<ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton>}</div>
+        <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running || tests.predicting}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onRevise}>Save revision</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton>}<ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton>}</div>
         {selectedResponse && alreadyScrutinised && <p className="text-xs text-slate-400 mt-3">You already scrutinised this response — saving again updates that record.</p>}
+        <TestPredictionBox tests={tests} />
         <TestResultsPanel results={tests.results} />
       </div>
       <OutputPanel output={output} error={runError} systemError={systemError} />
@@ -672,7 +689,28 @@ function PhaseCard({ icon, title, description, accent, children }: { icon: React
   return <section className="bg-white border border-slate-200 rounded-xl p-5 sm:p-7 shadow-sm"><div className="flex gap-3 mb-6"><div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 text-white" style={{ backgroundColor: accent.accent }}>{icon}</div><div><h2 className="text-lg font-bold text-slate-900">{title}</h2><p className="text-sm text-slate-500 mt-1 leading-5">{description}</p></div></div>{children}</section>;
 }
 
-interface TestsProps { count: number; running: boolean; results: TestCaseResult[] | null; onRun: () => void }
+interface TestPrediction { predictedPassed: number; confidence: number }
+interface TestsProps { count: number; running: boolean; results: TestCaseResult[] | null; onRun: () => void; predicting: boolean; onPredict: (p: TestPrediction) => void; onCancelPrediction: () => void }
+
+/** Asks the student to predict the test outcome before the tests run. */
+function TestPredictionBox({ tests }: { tests: TestsProps }) {
+  const [predicted, setPredicted] = useState<number | null>(null);
+  const [confidence, setConfidence] = useState<number | null>(null);
+  useEffect(() => { if (!tests.predicting) { setPredicted(null); setConfidence(null); } }, [tests.predicting]);
+  if (!tests.predicting) return null;
+  const counts = Array.from({ length: tests.count + 1 }, (_, i) => i);
+  const choice = (active: boolean) => `min-w-10 px-3 py-2 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-slate-400 ${active ? 'bg-slate-900 border-slate-900 text-white' : 'border-slate-300 text-slate-700 hover:border-slate-500'}`;
+  return <div className="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-4" role="group" aria-label="Predict the test result">
+    <p className="text-sm font-medium text-slate-800">Before running: how many of the {tests.count} test{tests.count === 1 ? '' : 's'} do you expect to pass?</p>
+    <div className="flex flex-wrap gap-2 mt-2">{counts.map((n) => <button key={n} type="button" aria-pressed={predicted === n} onClick={() => setPredicted(n)} className={choice(predicted === n)}>{n}</button>)}</div>
+    <p className="text-sm font-medium text-slate-800 mt-4">How sure are you?</p>
+    <div className="flex flex-wrap items-center gap-2 mt-2">{[1, 2, 3, 4, 5].map((n) => <button key={n} type="button" aria-pressed={confidence === n} onClick={() => setConfidence(n)} className={choice(confidence === n)}>{n}</button>)}<span className="text-xs text-slate-500 ml-1">1 = guessing · 5 = certain</span></div>
+    <div className="flex gap-2 mt-4">
+      <button type="button" disabled={predicted === null || confidence === null || tests.running} onClick={() => predicted !== null && confidence !== null && tests.onPredict({ predictedPassed: predicted, confidence })} className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40"><FlaskConical className="w-4 h-4" />Run tests</button>
+      <button type="button" onClick={tests.onCancelPrediction} className="px-4 py-2 rounded-lg border border-slate-300 text-sm text-slate-700 hover:bg-white">Cancel</button>
+    </div>
+  </div>;
+}
 
 function TestResultsPanel({ results }: { results: TestCaseResult[] | null }) {
   if (!results) return null;
