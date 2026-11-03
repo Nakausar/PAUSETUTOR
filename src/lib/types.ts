@@ -97,6 +97,15 @@ export type EventType =
   // Assignment and session lifecycle
   | 'TASK_ASSIGNED'
   | 'SESSION_STARTED'
+  // Fine-grained activity (logging schema v2)
+  | 'CODE_AUTOSAVED'
+  | 'TEXT_PASTED'
+  | 'AI_RESPONSE_COPIED'
+  | 'FOCUS_LOST'
+  | 'FOCUS_RETURNED'
+  | 'IDLE_STARTED'
+  | 'IDLE_ENDED'
+  | 'AI_FOLLOWUP_REQUEST'
   // Transitions
   | 'PHASE_TRANSITION'
   | 'PHASE_ENTERED'
