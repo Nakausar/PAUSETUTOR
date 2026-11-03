@@ -69,10 +69,12 @@ The full prompt, response, model, prompt hash and token counts are in `ai_intera
 | Event | When | Metadata |
 |---|---|---|
 | `AI_ACCURACY_RATING` | Student judged the AI response | `accuracy_judgment` (correct / mostly_correct / partly_correct / incorrect / unsure), `interaction_number` |
-| `INTENDED_AI_UPTAKE` | Student chose what to do with it | `intended_action` (test / modify / use_part / own_version / clarify / reject) |
-| `AI_CRITIQUE_TEXT` | Student wrote what the AI got wrong | `critique_length` |
-| `SCRUTINISE_SUBMITTED` | Scrutiny form submitted | `accuracy_judgment`, `intended_action`, `action_taken`, `interaction_number` |
+| `INTENDED_AI_UPTAKE` | Student chose what to do with it (optional; logged only when answered) | `intended_action` (test / modify / use_part / own_version / clarify / reject) |
+| `AI_CRITIQUE_TEXT` | Student wrote what the AI got wrong or missed (optional; offered for any judgment other than "correct") | `critique_length` |
+| `SCRUTINISE_SUBMITTED` | Scrutiny form submitted (only the accuracy judgment is required) | `accuracy_judgment`, `intended_action` (empty if skipped), `action_taken`, `interaction_number`, `time_on_scrutiny_ms` (from first showing the response in Scrutinise), `optional_answered` {`intended_action`, `critique`}, `optional_answered_count` (0–2) |
 | `AI_SUGGESTION_ACCEPTED` / `_MODIFIED` / `_REJECTED` | Final decision on the suggestion | `test_passed`, `interaction_number` |
+
+Before the slimmer form, intended action was required and a critique was required only for "incorrect". When comparing older and newer sessions, use `accuracy_judgment` as the common measure. `time_on_scrutiny_ms` and `optional_answered_count` can show click-through or fatigue across tasks (shorter times and fewer optional answers in later tasks).
 
 ## Evaluate
 

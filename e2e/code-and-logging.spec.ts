@@ -112,3 +112,47 @@ test('"Save revisions and continue to Evaluate" saves unsaved code before moving
   await expect.poll(() => db.code_snapshots.some((s) => s.trigger === 'revision' && String(s.code).includes('last edit'))).toBe(true);
   await expect.poll(() => db.sessions[0].current_phase).toBe('evaluate');
 });
+
+test('scrutiny needs only the accuracy judgment and records time and optional answers', async ({ page }) => {
+  const ai = { id: 'ai-5', session_id: 'sess-1', participant_id: 'P-TEST01', category: 'hint', prompt: 'help', response: 'Use range(0, n, 2).', parent_interaction_id: null, turn_index: 0, created_at: '2026-11-06T09:30:00Z' };
+  const db = studentFixture('scrutinise', { aiInteractions: [ai] });
+  await installMockSupabase(page, db, { user });
+  await page.goto('/#/task/sess-1');
+  await expect(page.getByText('What will you do?')).toContainText('(optional)');
+
+  // Without an accuracy judgment, saving is refused.
+  await page.getByRole('button', { name: 'Accept response' }).click();
+  await expect(page.getByText('Please rate how accurate you think the AI response is.')).toBeVisible();
+
+  // Doubting the response shows the optional critique box; leave it empty.
+  await page.getByRole('button', { name: 'Partly correct' }).click();
+  await expect(page.getByText('What do you think is wrong or missing?')).toBeVisible();
+  await page.getByRole('button', { name: 'Accept response' }).click();
+
+  await expect.poll(() => db.scrutiny_responses.length).toBe(1);
+  expect(db.scrutiny_responses[0]).toMatchObject({ accuracy_judgment: 'partly_correct', intended_action: '', critique_text: '' });
+  await expect.poll(() => db.event_logs.find((e) => e.event_type === 'SCRUTINISE_SUBMITTED')?.metadata).toMatchObject({
+    accuracy_judgment: 'partly_correct', optional_answered: { intended_action: false, critique: false }, optional_answered_count: 0,
+  });
+  const meta = db.event_logs.find((e) => e.event_type === 'SCRUTINISE_SUBMITTED')!.metadata as Record<string, unknown>;
+  expect(typeof meta.time_on_scrutiny_ms).toBe('number');
+  const types = db.event_logs.map((e) => e.event_type);
+  expect(types).toContain('AI_ACCURACY_RATING');
+  expect(types).not.toContain('INTENDED_AI_UPTAKE');
+  expect(types).not.toContain('AI_CRITIQUE_TEXT');
+});
+
+test('optional scrutiny answers are saved and logged when given', async ({ page }) => {
+  const ai = { id: 'ai-6', session_id: 'sess-1', participant_id: 'P-TEST01', category: 'hint', prompt: 'help', response: 'Use range(1, n).', parent_interaction_id: null, turn_index: 0, created_at: '2026-11-06T09:30:00Z' };
+  const db = studentFixture('scrutinise', { aiInteractions: [ai] });
+  await installMockSupabase(page, db, { user });
+  await page.goto('/#/task/sess-1');
+  await page.getByRole('button', { name: 'Incorrect' }).click();
+  await page.getByRole('button', { name: 'Write my own version' }).click();
+  await page.locator('textarea[data-track="critique"]').fill('range(1, n) skips 0, which is even.');
+  await page.getByRole('button', { name: 'Reject suggestion' }).click();
+  await expect.poll(() => db.scrutiny_responses[0]).toMatchObject({ accuracy_judgment: 'incorrect', intended_action: 'own_version', critique_text: 'range(1, n) skips 0, which is even.', action_taken: 'rejected' });
+  await expect.poll(() => db.event_logs.find((e) => e.event_type === 'SCRUTINISE_SUBMITTED')?.metadata).toMatchObject({ optional_answered_count: 2 });
+  const types = db.event_logs.map((e) => e.event_type);
+  expect(types).toEqual(expect.arrayContaining(['INTENDED_AI_UPTAKE', 'AI_CRITIQUE_TEXT', 'AI_SUGGESTION_REJECTED']));
+});
