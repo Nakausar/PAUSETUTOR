@@ -7,6 +7,22 @@ PAUSE has two parts:
 
 Use an **EU region** for Supabase (e.g. Frankfurt or Stockholm) so research data stays in the EU.
 
+## Quick path: Supabase project created by Bolt + Netlify
+
+No command-line tools needed.
+
+1. **Database:** Supabase → SQL Editor → New query → paste all of [`supabase/manual/apply_2026-11_updates.sql`](../supabase/manual/apply_2026-11_updates.sql) → Run. Then run the checks at the bottom of that file (researcher accounts).
+2. **Auth:** Authentication → Sign In / Providers → Email → turn on **Confirm email**.
+3. **Edge functions:** in GitHub → Settings → Secrets and variables → Actions, add `SUPABASE_ACCESS_TOKEN` (supabase.com → Account → Access Tokens) and `SUPABASE_PROJECT_REF`. Then Actions → **Deploy Supabase edge functions** → Run workflow. Later changes to the functions deploy automatically.
+4. **Secrets:** Supabase → Edge Functions → Secrets: `OPENAI_API_KEY` (and later `ALLOWED_ORIGIN`).
+5. **Website:** Netlify → Add new site → Import an existing project → GitHub → PAUSETUTOR. Build settings come from `netlify.toml`. Add environment variables `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (Supabase → Project Settings → API), then deploy. Every push to `main` redeploys.
+6. Put the Netlify address into `ALLOWED_ORIGIN` (step 4) and into Supabase → Authentication → URL Configuration → **Site URL**.
+7. Work through the launch checklist at the end of this page.
+
+`supabase/tests/security_check.sh` (run in CI) applies the original migrations plus this update file to a plain PostgreSQL and checks the row-level security, so the update file is tested on every change.
+
+The detailed steps for other setups follow.
+
 ## 1. Supabase project
 
 1. Create a project at supabase.com (EU region). Note the **Project URL**, the **anon public key** and the **project ref** (Settings → API).
