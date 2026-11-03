@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Brain, Check, ClipboardCheck, FileCode, Lightbulb, Loader2, Save, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Brain, Check, CheckCircle2, ClipboardCheck, FileCode, FlaskConical, Lightbulb, Loader2, Save, Sparkles, X, XCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
 import { AI_CATEGORY_LABELS } from '@/lib/constants';
 import { callEdgeFunction } from '@/lib/edgeFunctions';
-import type { Assessment, MetacognitiveRating, AIInteraction, CodeAttempt, CodeSnapshot, Plan, Reflection, ScrutinyResponse, Session, Task } from '@/lib/types';
+import { runTestCases, type TestCaseResult } from '@/lib/codeRunner';
+import type { TestCase, Assessment, MetacognitiveRating, AIInteraction, CodeAttempt, CodeSnapshot, Plan, Reflection, ScrutinyResponse, Session, Task } from '@/lib/types';
 
 const RATING_CATEGORIES: { key: string; label: string; helper: string }[] = [
   { key: 'planning', label: 'Planning', helper: 'Specificity and quality of plans, including revisions after AI assistance.' },
@@ -48,6 +49,9 @@ export default function SessionAssessment() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [hiddenTests, setHiddenTests] = useState<TestCase[]>([]);
+  const [testRun, setTestRun] = useState<TestCaseResult[] | null>(null);
+  const [runningTests, setRunningTests] = useState(false);
 
   useEffect(() => {
     void load();
@@ -66,6 +70,11 @@ export default function SessionAssessment() {
     setSession(sessionData as Session & { task?: Task; attempts?: { current_code: string; run_count: number; revision_count: number; last_error: string | null; last_output: string | null }[] });
     const snap = (sessionData as { attempts?: { current_code: string }[] }).attempts;
     setFinalCode(snap && snap.length > 0 ? snap[snap.length - 1].current_code : null);
+    const taskId = (sessionData as { task_id?: string }).task_id;
+    if (taskId) {
+      const hidden = await supabase.from('task_hidden_tests').select('test_cases').eq('task_id', taskId).maybeSingle();
+      setHiddenTests(((hidden.data?.test_cases ?? []) as TestCase[]).map((t) => ({ ...t, hidden: true })));
+    }
     void loadInitialCode();
 
     const { data: assessmentData } = await supabase
@@ -113,10 +122,27 @@ export default function SessionAssessment() {
     };
   }
 
+  function allTests(): TestCase[] {
+    return [...(session?.task?.test_cases ?? []).map((t) => ({ ...t, hidden: false })), ...hiddenTests];
+  }
+
+  /** Runs visible + hidden tests against the student's final code (in this browser). */
+  async function runAllTests(): Promise<TestCaseResult[] | null> {
+    const tests = allTests();
+    if (!finalCode || tests.length === 0) return null;
+    setRunningTests(true);
+    const results = await runTestCases(finalCode, tests);
+    setTestRun(results);
+    setRunningTests(false);
+    return results;
+  }
+
   async function generateSuggestion() {
     if (!session?.task || !sessionId) return;
     setGenerating(true); setError(''); setNotice('');
     try {
+      const results = testRun ?? await runAllTests();
+      const testCasesWithResults = allTests().map((t, i) => ({ input: t.input, expected: t.expected, hidden: Boolean(t.hidden), passed: results ? results[i]?.passed : undefined }));
       const ev = await gatherEvidence();
       setEvidence(ev);
       const response = await callEdgeFunction('ai-assessor', {
@@ -125,7 +151,7 @@ export default function SessionAssessment() {
           learningObjectives: session.task.learning_objectives,
           expectedInputs: session.task.expected_inputs,
           expectedOutputs: session.task.expected_outputs,
-          testCases: session.task.test_cases ?? [],
+          testCases: testCasesWithResults,
           evidence: {
             plans: ev.plans.map((p) => ({ id: p.id, plan_text: p.plan_text, confidence: p.confidence, version: p.version, created_after_ai: p.created_after_ai })),
             attempts: ev.attempts.map((a) => ({ current_code: a.current_code, run_count: a.run_count, revision_count: a.revision_count, last_error: a.last_error, last_output: a.last_output })),
@@ -314,6 +340,33 @@ export default function SessionAssessment() {
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700 p-3">{error}</div>}
       {notice && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 text-sm text-emerald-700 p-3">{notice}</div>}
+
+      <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-slate-900">Test results on final code</h2>
+            <p className="text-xs text-slate-500 mt-1">{(session.task?.test_cases ?? []).length} visible + {hiddenTests.length} hidden test(s). Runs in this browser; results are included in the AI suggestion.</p>
+          </div>
+          <button onClick={() => void runAllTests()} disabled={runningTests || !finalCode || allTests().length === 0} className="flex items-center gap-2 border border-slate-300 text-slate-800 text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-slate-50 disabled:opacity-50 shrink-0">
+            {runningTests ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
+            {testRun ? 'Run tests again' : 'Run all tests'}
+          </button>
+        </div>
+        {allTests().length === 0 && <p className="text-xs text-slate-500 mt-3">This task has no test cases. Add them under Programming tasks → Test cases.</p>}
+        {testRun && (
+          <div className="mt-4">
+            <div className="text-sm font-semibold text-slate-900 mb-2">{testRun.filter((r) => r.passed).length} of {testRun.length} passed{hiddenTests.length > 0 && <span className="font-normal text-slate-500"> · hidden: {testRun.filter((r) => r.hidden && r.passed).length} of {testRun.filter((r) => r.hidden).length}</span>}</div>
+            <ul className="space-y-1.5">
+              {testRun.map((r, i) => (
+                <li key={i} className="text-xs">
+                  <div className="flex items-center gap-1.5 text-slate-700">{r.passed ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <XCircle className="w-3.5 h-3.5 text-red-600" />}Test {i + 1}{r.hidden && <span className="text-slate-500">(hidden)</span>}{r.timedOut && <span className="text-amber-700">timed out</span>}</div>
+                  {!r.passed && <pre className="mt-1 ml-5 bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-28 overflow-auto">{r.error ? r.error : `Expected:\n${r.expected || '(nothing)'}\n\nGot:\n${r.actual || '(nothing)'}`}</pre>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

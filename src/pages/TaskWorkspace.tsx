@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Check, ChevronRight, Code2, Lightbulb, Loader2, MessageSquare, Play, Save, Send, ShieldCheck, Sparkles, Terminal } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, CheckCircle2, ChevronRight, Code2, FlaskConical, Lightbulb, Loader2, MessageSquare, Play, Save, Send, ShieldCheck, Sparkles, Terminal, XCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
-import { runPythonCode } from '@/lib/codeRunner';
+import { runPythonCode, runTestCases, type TestCaseResult } from '@/lib/codeRunner';
+import { preloadPython } from '@/lib/python/browserRunner';
+import CodeEditor from '@/components/CodeEditor';
 import { callEdgeFunction } from '@/lib/edgeFunctions';
 import { AI_CATEGORIES, AI_CATEGORY_LABELS, AI_HELP_REFLECTION_OPTIONS, PHASE_COLORS, PHASE_LABELS, REFLECT_CONSTANTS, ACCURACY_JUDGMENT_OPTIONS, INTENDED_ACTION_OPTIONS } from '@/lib/constants';
 import PhaseProgress from '@/components/PhaseProgress';
@@ -55,6 +57,8 @@ export default function TaskWorkspace() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiResponse, setAiResponse] = useState<AIInteraction | null>(null);
   const [visitCounts, setVisitCounts] = useState<Partial<Record<PausePhase, number>>>({});
+  const [testResults, setTestResults] = useState<TestCaseResult[] | null>(null);
+  const [testing, setTesting] = useState(false);
   const usedAI = aiInteractions.length > 0;
   const originalPlan = plans.length > 0 ? plans[plans.length - 1] : null;
   const latestPlan = plans.length > 0 ? plans[0] : null;
@@ -62,6 +66,8 @@ export default function TaskWorkspace() {
   const hasUnscrutinisedAI = aiInteractions.some((i) => !scrutinies.some((s) => s.ai_interaction_id === i.id));
 
   useEffect(() => { void loadWorkspace(); }, [sessionId, taskId, profile?.id]);
+  // Start downloading Python in the background so the first run is fast.
+  useEffect(() => { preloadPython(); }, []);
 
   const planStartLogged = useRef(false);
   const planEditedLogged = useRef(false);
@@ -237,8 +243,30 @@ export default function TaskWorkspace() {
       : result.error
         ? 'Code execution returned a student code error.'
         : 'Code executed without a reported error.';
-    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType, description, metadata: { error: result.error, output_length: result.output.length, stdout: result.stdout, stderr: result.stderr, stdin, exit_code: result.exitCode, system_error: result.systemError, run_number: newRunCount } });
+    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType, description, metadata: { error: result.error, output_length: result.output.length, stdout: result.stdout, stderr: result.stderr, stdin, exit_code: result.exitCode, system_error: result.systemError, run_number: newRunCount, runner: result.runner, timed_out: result.timedOut, duration_ms: result.durationMs } });
     setRunning(false);
+  }
+
+  /** Runs the task's visible test cases against the current code and logs a TEST event. */
+  async function runTests() {
+    if (!session || !task || !profile || running || testing) return;
+    const cases = task.test_cases ?? [];
+    if (cases.length === 0) return;
+    setTesting(true);
+    const results = await runTestCases(code, cases);
+    setTestResults(results);
+    const passed = results.filter((r) => r.passed).length;
+    const systemFailure = results.some((r) => r.systemError);
+    await logEvent({
+      sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType: 'TEST',
+      description: systemFailure ? 'Test run failed because code execution was unavailable.' : `Student ran the visible tests: ${passed} of ${results.length} passed.`,
+      metadata: {
+        source: 'visible_tests', passed, total: results.length, all_passed: passed === results.length, system_error: systemFailure,
+        code_length: code.length, code,
+        results: results.map((r, i) => ({ index: i, passed: r.passed, timed_out: r.timedOut, error: r.error ? r.error.slice(-300) : null })),
+      },
+    });
+    setTesting(false);
   }
 
   async function requestAI() {
@@ -354,9 +382,9 @@ export default function TaskWorkspace() {
     {notice && <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700">{notice}</div>}
     {error && <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}
     {phase === 'plan' && <PlanPhase values={planForm} setValues={setPlanForm} onTextChange={handlePlanTextChange} onSave={savePlan} isRevision={plans.length > 0} originalPlanText={originalPlan?.plan_text ?? null} planVersion={planVersion} />}
-    {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} />}
+    {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
     {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} />}
-    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={() => goToPhase('evaluate')} onRevise={saveRevision} />}
+    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={() => goToPhase('evaluate')} onRevise={saveRevision} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
     {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('scrutinise')} canGoBack={enabled.has('scrutinise')} />}
   </div>;
 }
@@ -375,15 +403,16 @@ function PlanPhase({ values, setValues, onTextChange, onSave, isRevision, origin
   </PhaseCard>;
 }
 
-function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onContinue }: { code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: () => void; onContinue: () => void }) {
+function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onContinue, tests }: { tests: TestsProps; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: () => void; onContinue: () => void }) {
   const c = phaseAccent('attempt');
   return <PhaseCard accent={c} icon={<Terminal />} title="Make your independent attempt" description="Work on the problem before asking the AI tutor. Correctness is not required yet; meaningful effort is.">
     <div className="grid lg:grid-cols-2 gap-4">
       <div>
         <div className="flex items-center justify-between mb-1.5"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Python editor</span><span className="text-xs text-slate-400">Your code is snapshotted</span></div>
-        <textarea value={code} onChange={(e) => setCode(e.target.value)} className="w-full h-80 bg-slate-950 text-slate-100 font-mono text-sm p-4 rounded-lg outline-none resize-y border border-slate-800 focus:ring-2 focus:ring-violet-500/60" spellCheck={false} />
+        <CodeEditor value={code} onChange={setCode} height="20rem" onRun={running ? undefined : onRun} />
         <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-violet-500" /></label></div>
-        <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running}>Run code</ActionButton><ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onSave}>Save attempt</ActionButton></div>
+        <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onSave}>Save attempt</ActionButton></div>
+        <TestResultsPanel results={tests.results} />
       </div>
       <OutputPanel output={output} error={runError} systemError={systemError} />
     </div>
@@ -402,7 +431,7 @@ function AIPhase({ categories, selected, setSelected, question, setQuestion, bus
   </PhaseCard>;
 }
 
-function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onSkip, onRevise }: { interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void; onSkip: () => void; onRevise: () => void }) {
+function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onSkip, onRevise, tests }: { tests: TestsProps; interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void; onSkip: () => void; onRevise: () => void }) {
   const c = phaseAccent('scrutinise');
   const form: ScrutinyForm = selectedResponse ? (forms[selectedResponse.id] ?? emptyScrutinyForm) : emptyScrutinyForm;
   const showCritique = form.accuracy_judgment === 'incorrect';
@@ -422,10 +451,11 @@ function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms
     <div className="grid lg:grid-cols-2 gap-4">
       <div>
         <div className="flex items-center justify-between mb-1.5"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Your code</span><span className="text-xs text-slate-400">Every save is snapshotted — previous versions are kept</span></div>
-        <textarea value={code} onChange={(e) => setCode(e.target.value)} className="w-full h-64 bg-slate-950 text-slate-100 font-mono text-sm p-4 rounded-lg outline-none resize-y border border-slate-800 focus:ring-2 focus:ring-teal-500/60" spellCheck={false} />
+        <CodeEditor value={code} onChange={setCode} height="16rem" onRun={running ? undefined : onRun} />
         <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-teal-500" /></label></div>
-        <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running}>Run code</ActionButton><ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onRevise}>Save revision</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton>}<ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton>}</div>
+        <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onRevise}>Save revision</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton>}<ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton>}</div>
         {selectedResponse && alreadyScrutinised && <p className="text-xs text-slate-400 mt-3">You already scrutinised this response — saving again updates that record.</p>}
+        <TestResultsPanel results={tests.results} />
       </div>
       <OutputPanel output={output} error={runError} systemError={systemError} />
     </div>
@@ -457,6 +487,24 @@ function ReflectionPhase({ values, setValues, usedAI, onSubmit, onBack, canGoBac
 
 function PhaseCard({ icon, title, description, accent, children }: { icon: React.ReactNode; title: string; description: string; accent: { accent: string; accentSoft: string }; children: React.ReactNode }) {
   return <section className="bg-white border border-slate-200 rounded-xl p-5 sm:p-7 shadow-sm"><div className="flex gap-3 mb-6"><div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 text-white" style={{ backgroundColor: accent.accent }}>{icon}</div><div><h2 className="text-lg font-bold text-slate-900">{title}</h2><p className="text-sm text-slate-500 mt-1 leading-5">{description}</p></div></div>{children}</section>;
+}
+
+interface TestsProps { count: number; running: boolean; results: TestCaseResult[] | null; onRun: () => void }
+
+function TestResultsPanel({ results }: { results: TestCaseResult[] | null }) {
+  if (!results) return null;
+  const passed = results.filter((r) => r.passed).length;
+  const all = passed === results.length;
+  return <div className={`mt-3 rounded-lg border p-3 ${all ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`} aria-live="polite">
+    <div className={`text-sm font-semibold ${all ? 'text-emerald-800' : 'text-amber-900'}`}>{passed} of {results.length} tests passed</div>
+    <ul className="mt-2 space-y-2">{results.map((r, i) => <li key={i} className="text-xs">
+      <div className="flex items-center gap-1.5 font-medium text-slate-700">{r.passed ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <XCircle className="w-3.5 h-3.5 text-red-600" />}Test {i + 1}{r.input ? <span className="font-normal text-slate-500">· input: <code>{r.input.length > 40 ? `${r.input.slice(0, 40)}…` : r.input.replace(/\n/g, ' ⏎ ')}</code></span> : null}</div>
+      {!r.passed && <div className="grid sm:grid-cols-2 gap-2 mt-1">
+        <div><div className="text-slate-500 mb-0.5">Expected</div><pre className="bg-white border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{r.expected || '(nothing)'}</pre></div>
+        <div><div className="text-slate-500 mb-0.5">{r.error ? 'Error' : 'Your program printed'}</div><pre className="bg-white border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{r.error || r.actual || '(nothing)'}</pre></div>
+      </div>}
+    </li>)}</ul>
+  </div>;
 }
 
 function OutputPanel({ output, error, systemError }: { output: string; error: string | null; systemError?: boolean }) {

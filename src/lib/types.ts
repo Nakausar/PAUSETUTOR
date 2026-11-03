@@ -133,6 +133,8 @@ export interface Task {
 export interface TestCase {
   input: string;
   expected: string;
+  /** Hidden tests are never sent to students; researchers run them during assessment. */
+  hidden?: boolean;
 }
 
 export type AssignmentStatus = 'not_started' | 'in_progress' | 'completed';
