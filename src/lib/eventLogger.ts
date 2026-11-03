@@ -40,7 +40,19 @@ function sweepRecentSignatures(now: number) {
  * Returns the inserted row id, or null on failure or when the action was
  * already recorded (duplicate key responses are handled gracefully, never retried).
  */
+// "Research logging enabled" on the Tutor configuration page. Read at most
+// once a minute; if the setting can't be read, logging stays on.
+let loggingEnabled: { value: boolean; at: number } | null = null;
+async function isLoggingEnabled(): Promise<boolean> {
+  if (loggingEnabled && Date.now() - loggingEnabled.at < 60000) return loggingEnabled.value;
+  const { data, error } = await supabase.from('system_settings').select('research_logging_enabled').eq('id', 1).maybeSingle();
+  const value = error || !data ? true : (data as { research_logging_enabled: boolean }).research_logging_enabled !== false;
+  loggingEnabled = { value, at: Date.now() };
+  return value;
+}
+
 export async function logEvent(params: LogEventParams): Promise<string | null> {
+  if (!(await isLoggingEnabled())) return null;
   const signature = `${params.sessionId}|${params.eventType}|${params.description ?? ''}|${params.aiInteractionId ?? ''}|${params.idempotencyKey ?? ''}`;
   const now = Date.now();
   sweepRecentSignatures(now);

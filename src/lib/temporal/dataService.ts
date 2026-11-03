@@ -61,7 +61,8 @@ export async function loadTemporalDataset(force = false): Promise<TemporalDatase
     fetchAll<Session>('sessions', '*', 'started_at', true),
     fetchAll<Task>('tasks', 'id, title, language, difficulty', 'title', true),
     fetchAll<EventLog>('event_logs', 'id, participant_id, student_id, session_id, task_id, timestamp, pause_phase, event_type, event_description, code_snapshot_id, ai_interaction_id, metadata', 'timestamp', true),
-    fetchAll<AIInteraction>('ai_interactions', 'id, participant_id, student_id, session_id, category, prompt, response, full_solution_requested, created_at', 'created_at', true),
+    // '*' so this works before and after the day 4 migration (parent_interaction_id).
+    fetchAll<AIInteraction>('ai_interactions', '*', 'created_at', true),
     fetchAll<ScrutinyResponse>('scrutiny_responses', 'id, participant_id, student_id, session_id, ai_interaction_id, accuracy_judgment, intended_action, action_taken, test_result, produced_expected_result, code_before, code_after, created_at', 'created_at', true),
     fetchAll<Plan>('plans', 'id, participant_id, session_id, student_id, plan_text, confidence, version, created_after_ai, created_at', 'created_at', true),
     fetchAll<Assessment>('assessments', '*', 'updated_at', true),
@@ -71,7 +72,9 @@ export async function loadTemporalDataset(force = false): Promise<TemporalDatase
     sessions,
     tasks,
     events: kept,
-    aiInteractions,
+    // Follow-up questions belong to their root request; the temporal analysis
+    // counts root requests only (follow-ups appear as FollowUp in the TNA export).
+    aiInteractions: aiInteractions.filter((i) => !i.parent_interaction_id),
     scrutiny,
     plans,
     assessments,

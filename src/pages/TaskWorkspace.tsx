@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Check, CheckCircle2, ChevronRight, Code2, FlaskConical, Lightbulb, Loader2, MessageSquare, Play, Save, Send, ShieldCheck, Sparkles, Terminal, XCircle } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, CheckCircle2, ChevronRight, Code2, FlaskConical, Lightbulb, Loader2, Lock, MessageSquare, Play, Save, Send, ShieldCheck, Sparkles, Terminal, XCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
@@ -12,9 +12,24 @@ import { diffStats } from '@/lib/provenance';
 import { callEdgeFunction } from '@/lib/edgeFunctions';
 import { AI_CATEGORIES, AI_CATEGORY_LABELS, AI_HELP_REFLECTION_OPTIONS, PHASE_COLORS, PHASE_LABELS, REFLECT_CONSTANTS, ACCURACY_JUDGMENT_OPTIONS, INTENDED_ACTION_OPTIONS } from '@/lib/constants';
 import PhaseProgress from '@/components/PhaseProgress';
-import type { AICategory, CodeAttempt, Plan, Session, Task, PausePhase, AIInteraction, ScrutinyResponse, AccuracyJudgment, IntendedAction, DifficultyChoice, PerceivedIndependence, AiDisagreement, PerceivedIndependentAbility, PlanConfidence } from '@/lib/types';
+import type { EventType, AICategory, CodeAttempt, Plan, Session, Task, PausePhase, AIInteraction, ScrutinyResponse, AccuracyJudgment, IntendedAction, DifficultyChoice, PerceivedIndependence, AiDisagreement, PerceivedIndependentAbility, PlanConfidence } from '@/lib/types';
 
 const AUTOSAVE_INTERVAL_MS = 15000;
+
+/** Complete-solution gate and follow-up limit (Tutor configuration page). */
+interface GateSettings { solution_min_runs: number; solution_min_minutes: number; solution_requires_reason: boolean; max_followups: number }
+const DEFAULT_GATE: GateSettings = { solution_min_runs: 1, solution_min_minutes: 3, solution_requires_reason: true, max_followups: 5 };
+
+/** Each AI request category is logged with its own event type. */
+const REQUEST_EVENT: Record<AICategory, EventType> = {
+  explain_concept: 'EXPLANATION_REQUEST',
+  hint: 'HINT_REQUEST',
+  debug: 'DEBUG_REQUEST',
+  review_approach: 'APPROACH_REVIEW_REQUEST',
+  explain_error: 'ERROR_EXPLANATION_REQUEST',
+  targeted_question: 'TARGETED_QUESTION',
+  solution_request: 'SOLUTION_REQUEST',
+};
 
 type PlanForm = { plan_text: string; confidence: PlanConfidence | null };
 type ScrutinyForm = { accuracy_judgment: AccuracyJudgment | ''; intended_action: IntendedAction | ''; critique_text: string };
@@ -58,6 +73,11 @@ export default function TaskWorkspace() {
   const [running, setRunning] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<AICategory>('hint');
   const [question, setQuestion] = useState('');
+  // Follow-up questions, keyed by the root interaction they belong to.
+  const [followUps, setFollowUps] = useState<Record<string, AIInteraction[]>>({});
+  const [followUpBusy, setFollowUpBusy] = useState(false);
+  const [solutionReason, setSolutionReason] = useState('');
+  const [gateSettings, setGateSettings] = useState<GateSettings>(DEFAULT_GATE);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiResponse, setAiResponse] = useState<AIInteraction | null>(null);
   const [visitCounts, setVisitCounts] = useState<Partial<Record<PausePhase, number>>>({});
@@ -76,12 +96,12 @@ export default function TaskWorkspace() {
   // ---- Fine-grained research logging (logging schema v2) --------------------
   // Refs give the timers below the latest values without restarting them.
   const lastSnapshotCode = useRef<string | null>(null);
-  const live = useRef({ code, attempt, phase, session, profile, aiInteractions });
-  live.current = { code, attempt, phase, session, profile, aiInteractions };
+  const live = useRef({ code, attempt, phase, session, profile, aiInteractions, followUps });
+  live.current = { code, attempt, phase, session, profile, aiInteractions, followUps };
 
   useActivityTracking({
     enabled: Boolean(session && profile && phase !== 'completed'),
-    getResponses: () => live.current.aiInteractions.map((i) => ({ id: i.id, response: i.response })),
+    getResponses: () => [...live.current.aiInteractions, ...Object.values(live.current.followUps).flat()].map((i) => ({ id: i.id, response: i.response })),
     log: (eventType, description, metadata) => {
       const { session: s, profile: p, phase: ph } = live.current;
       if (!s || !p) return;
@@ -202,9 +222,18 @@ export default function TaskWorkspace() {
       const starter = foundTask?.starter_code ?? '';
       setCode(starter); lastSnapshotCode.current = starter;
     }
-    const aiRows = (aiResult.data ?? []) as AIInteraction[];
+    const allAiRows = (aiResult.data ?? []) as AIInteraction[];
+    // Root interactions are the requests; follow-ups are grouped under their root.
+    const aiRows = allAiRows.filter((i) => !i.parent_interaction_id);
+    const grouped: Record<string, AIInteraction[]> = {};
+    for (const f of allAiRows.filter((i) => i.parent_interaction_id).sort((a, b) => (a.turn_index ?? 0) - (b.turn_index ?? 0))) {
+      grouped[f.parent_interaction_id!] = [...(grouped[f.parent_interaction_id!] ?? []), f];
+    }
+    setFollowUps(grouped);
     setAiInteractions(aiRows);
     if (aiRows.length > 0) setAiResponse(aiRows[0]);
+    const gate = await supabase.from('system_settings').select('solution_min_runs, solution_min_minutes, solution_requires_reason, max_followups').eq('id', 1).maybeSingle();
+    if (gate.data) setGateSettings({ ...DEFAULT_GATE, ...(gate.data as Partial<GateSettings>) });
     const scrutinyRows = (scrutinyResult.data ?? []) as ScrutinyResponse[];
     setScrutinies(scrutinyRows);
     const forms: Record<string, ScrutinyForm> = {};
@@ -348,11 +377,11 @@ export default function TaskWorkspace() {
     if (!session || !task || !profile) return;
     setAiBusy(true); setError(null);
     const prompt = question || `Please provide ${AI_CATEGORY_LABELS[selectedCategory].toLowerCase()} for my current work.`;
-    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'use_ai', eventType: selectedCategory === 'hint' ? 'HINT_REQUEST' : selectedCategory === 'debug' ? 'DEBUG_REQUEST' : selectedCategory === 'solution_request' ? 'SOLUTION_REQUEST' : 'TARGETED_QUESTION', description: `Student requested ${AI_CATEGORY_LABELS[selectedCategory].toLowerCase()}.`, metadata: { interaction_number: aiInteractions.length + 1 } });
+    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'use_ai', eventType: REQUEST_EVENT[selectedCategory], description: `Student requested ${AI_CATEGORY_LABELS[selectedCategory].toLowerCase()}.`, metadata: { interaction_number: aiInteractions.length + 1, category: selectedCategory, ...(selectedCategory === 'solution_request' ? { solution_reason: solutionReason } : {}) } });
     let data: { response?: string; error?: string; interaction?: AIInteraction } = {};
     let ok = false;
     try {
-      const response = await callEdgeFunction('ai-tutor', { sessionId: session.id, category: selectedCategory, userPrompt: prompt, contextCode: code, contextError: runError });
+      const response = await callEdgeFunction('ai-tutor', { sessionId: session.id, category: selectedCategory, userPrompt: prompt, contextCode: code, contextError: runError, solutionReason: selectedCategory === 'solution_request' ? solutionReason : undefined });
       ok = response.ok;
       data = await response.json().catch(() => ({}));
     } catch (err) {
@@ -361,8 +390,32 @@ export default function TaskWorkspace() {
     if (!ok || !data.response || !data.interaction) { setError(data.error ?? 'The AI tutor could not respond.'); setAiBusy(false); return; }
     const interaction = data.interaction;
     setAiResponse(interaction); setAiInteractions((current) => [interaction, ...current]);
+    if (selectedCategory === 'solution_request') setSolutionReason('');
     await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'use_ai', eventType: 'AI_RESPONSE', description: 'AI tutor response received.', aiInteractionId: interaction?.id, metadata: { category: selectedCategory, interaction_number: aiInteractions.length + 1 } });
     setAiBusy(false);
+  }
+
+  /** Follow-up question about one AI response (same category, conversation history kept). */
+  async function requestFollowUp(root: AIInteraction, text: string): Promise<boolean> {
+    if (!session || !profile || !text.trim()) return false;
+    setFollowUpBusy(true); setError(null);
+    const thread = followUps[root.id] ?? [];
+    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType: 'AI_FOLLOWUP_REQUEST', description: `Student asked follow-up question ${thread.length + 1} about an AI response.`, aiInteractionId: root.id, metadata: { root_interaction_id: root.id, category: root.category, turn: thread.length + 1 }, idempotencyKey: `${root.id}:followup:${thread.length + 1}` });
+    let data: { response?: string; error?: string; interaction?: AIInteraction } = {};
+    let ok = false;
+    try {
+      const response = await callEdgeFunction('ai-tutor', { sessionId: session.id, category: root.category, parentInteractionId: root.id, userPrompt: text.trim(), contextCode: code, contextError: runError });
+      ok = response.ok;
+      data = await response.json().catch(() => ({}));
+    } catch (err) {
+      data = { error: err instanceof Error ? err.message : 'The AI tutor could not respond.' };
+    }
+    if (!ok || !data.interaction) { setError(data.error ?? 'The AI tutor could not respond.'); setFollowUpBusy(false); return false; }
+    const reply = data.interaction;
+    setFollowUps((current) => ({ ...current, [root.id]: [...(current[root.id] ?? []), reply] }));
+    await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase, eventType: 'AI_RESPONSE', description: 'AI tutor answered a follow-up question.', aiInteractionId: reply.id, metadata: { category: root.category, root_interaction_id: root.id, turn: reply.turn_index ?? thread.length + 1 } });
+    setFollowUpBusy(false);
+    return true;
   }
 
   function setScrutinyFor(interactionId: string, form: ScrutinyForm) {
@@ -458,8 +511,8 @@ export default function TaskWorkspace() {
     {error && <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}
     {phase === 'plan' && <PlanPhase values={planForm} setValues={setPlanForm} onTextChange={handlePlanTextChange} onSave={savePlan} isRevision={plans.length > 0} originalPlanText={originalPlan?.plan_text ?? null} planVersion={planVersion} />}
     {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
-    {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} />}
-    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={() => goToPhase('evaluate')} onRevise={saveRevision} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
+    {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} onFollowUp={requestFollowUp} followUpBusy={followUpBusy} maxFollowups={gateSettings.max_followups} gate={gateSettings} runCount={attempt?.run_count ?? 0} startedAt={attempt?.started_at ?? null} solutionReason={solutionReason} setSolutionReason={setSolutionReason} />}
+    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={() => goToPhase('evaluate')} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: runTests }} />}
     {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('scrutinise')} canGoBack={enabled.has('scrutinise')} />}
   </div>;
 }
@@ -495,18 +548,62 @@ function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, system
   </PhaseCard>;
 }
 
-function AIPhase({ categories, selected, setSelected, question, setQuestion, busy, interactions, selectedResponse, onSelectResponse, onRequest, onContinue }: { categories: typeof AI_CATEGORIES; selected: AICategory; setSelected: (v: AICategory) => void; question: string; setQuestion: (v: string) => void; busy: boolean; interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; onRequest: () => void; onContinue: () => void }) {
+function AIPhase({ categories, selected, setSelected, question, setQuestion, busy, interactions, selectedResponse, onSelectResponse, onRequest, onContinue, thread, onFollowUp, followUpBusy, maxFollowups, gate, runCount, startedAt, solutionReason, setSolutionReason }: { categories: typeof AI_CATEGORIES; selected: AICategory; setSelected: (v: AICategory) => void; question: string; setQuestion: (v: string) => void; busy: boolean; interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; onRequest: () => void; onContinue: () => void; thread: AIInteraction[]; onFollowUp: (root: AIInteraction, text: string) => Promise<boolean>; followUpBusy: boolean; maxFollowups: number; gate: GateSettings; runCount: number; startedAt: string | null; solutionReason: string; setSolutionReason: (v: string) => void }) {
   const c = phaseAccent('use_ai');
+  // Re-check the time-based part of the solution gate every 10 seconds.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 10000); return () => clearInterval(t); }, []);
+  const minutesWorked = startedAt ? (now - new Date(startedAt).getTime()) / 60000 : 0;
+  const minutesLeft = Math.max(0, Math.ceil(gate.solution_min_minutes - minutesWorked));
+  const gateItems = [
+    { done: runCount >= gate.solution_min_runs, label: `Run your code at least ${gate.solution_min_runs} time${gate.solution_min_runs === 1 ? '' : 's'} (${Math.min(runCount, gate.solution_min_runs)}/${gate.solution_min_runs})` },
+    { done: minutesLeft === 0, label: minutesLeft === 0 ? `Work on your code for ${gate.solution_min_minutes} minutes` : `Keep working on your code for ${minutesLeft} more minute${minutesLeft === 1 ? '' : 's'}` },
+  ].filter((_, i) => (i === 0 ? gate.solution_min_runs > 0 : gate.solution_min_minutes > 0));
+  const solutionLocked = gateItems.some((g) => !g.done);
+  const needsReason = selected === 'solution_request' && gate.solution_requires_reason && solutionReason.trim().length < 10;
+  const requestDisabled = busy || (selected === 'solution_request' && (solutionLocked || needsReason));
   return <PhaseCard accent={c} icon={<Sparkles />} title="Use AI strategically" description="Choose the kind of support you need. The tutor sees your plan, code, and errors, and will guide rather than replace your reasoning.">
     {interactions.length > 0 && <div className="mb-5"><div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">AI responses so far</div><div className="flex flex-wrap gap-2">{interactions.map((i, idx) => { const num = interactions.length - idx; const active = selectedResponse?.id === i.id; return <button key={i.id} type="button" onClick={() => onSelectResponse(i)} aria-pressed={active} className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-amber-400 ${active ? 'border-transparent text-white' : 'border-slate-200 text-slate-600 hover:border-amber-400'}`} style={active ? { backgroundColor: c.accent } : undefined}>Response #{num}</button>; })}</div></div>}
-    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{categories.map((category) => <button key={category.key} onClick={() => setSelected(category.key)} aria-pressed={selected === category.key} className={`text-left p-3 rounded-lg border transition-colors focus-visible:ring-2 focus-visible:ring-amber-400 ${selected === category.key ? 'border-transparent text-white' : 'border-slate-200 hover:border-amber-400'}`} style={selected === category.key ? { backgroundColor: c.accent } : undefined}><div className="text-sm font-semibold">{category.label}</div><div className={`text-xs mt-1 ${selected === category.key ? 'text-amber-50' : 'text-slate-500'}`}>{category.description}</div></button>)}</div>
+    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{categories.map((category) => { const locked = category.key === 'solution_request' && solutionLocked; const active = selected === category.key; return <button key={category.key} onClick={() => setSelected(category.key)} aria-pressed={active} className={`text-left p-3 rounded-lg border transition-colors focus-visible:ring-2 focus-visible:ring-amber-400 ${active ? 'border-transparent text-white' : 'border-slate-200 hover:border-amber-400'} ${locked && !active ? 'opacity-70' : ''}`} style={active ? { backgroundColor: c.accent } : undefined}><div className="text-sm font-semibold flex items-center gap-1.5">{locked && <Lock className="w-3.5 h-3.5" aria-label="Locked" />}{category.label}</div><div className={`text-xs mt-1 ${active ? 'text-amber-50' : 'text-slate-500'}`}>{category.description}</div></button>; })}</div>
+    {selected === 'solution_request' && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+      {solutionLocked ? <>
+        <p className="font-medium text-amber-900">A complete solution unlocks after you have worked on the problem yourself:</p>
+        <ul className="mt-2 space-y-1">{gateItems.map((g) => <li key={g.label} className={`flex items-center gap-2 ${g.done ? 'text-emerald-700' : 'text-amber-900'}`}>{g.done ? <CheckCircle2 className="w-4 h-4" /> : <Lock className="w-4 h-4" />}{g.label}</li>)}</ul>
+        <p className="mt-2 text-xs text-amber-800">Meanwhile, a hint or debugging help may get you unstuck faster.</p>
+      </> : gate.solution_requires_reason && <label className="block"><span className="block font-medium text-amber-900 mb-1.5">Why do you need a complete solution? (required)</span><textarea value={solutionReason} onChange={(e) => setSolutionReason(e.target.value)} data-track="solution_reason" rows={2} placeholder="e.g. I have tried two approaches and both fail on the edge case of an empty list." className="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-white outline-none focus:ring-2 focus:ring-amber-400" /></label>}
+    </div>}
     <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Add a targeted question or context (optional)..." data-track="ai_question" rows={3} className="w-full mt-4 border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-amber-400" />
-    <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={busy ? <Loader2 className="animate-spin" /> : <Send />} onClick={onRequest} disabled={busy}>Request support</ActionButton>{selectedResponse && <ActionButton accent={c} icon={<ShieldCheck />} variant="secondary" onClick={onContinue}>Review this response in Scrutinise</ActionButton>}</div>
-    {selectedResponse && <div className="mt-5 bg-amber-50/70 border border-amber-200 rounded-lg p-4"><div className="flex items-center gap-2 text-xs font-semibold text-amber-700 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response</div><p className="text-sm text-slate-700 whitespace-pre-wrap leading-6" data-track="ai_response" data-interaction-id={selectedResponse.id}>{selectedResponse.response}</p></div>}
+    <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={busy ? <Loader2 className="animate-spin" /> : <Send />} onClick={onRequest} disabled={requestDisabled}>Request support</ActionButton>{selectedResponse && <ActionButton accent={c} icon={<ShieldCheck />} variant="secondary" onClick={onContinue}>Review this response in Scrutinise</ActionButton>}</div>
+    {selectedResponse && <div className="mt-5"><ConversationView root={selectedResponse} thread={thread} tone="light" /><FollowUpBox root={selectedResponse} count={thread.length} max={maxFollowups} busy={followUpBusy} onSend={onFollowUp} accent={c} /></div>}
   </PhaseCard>;
 }
 
-function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onSkip, onRevise, tests }: { tests: TestsProps; interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void; onSkip: () => void; onRevise: () => void }) {
+/** The original AI response plus any follow-up questions and answers. */
+function ConversationView({ root, thread, tone }: { root: AIInteraction; thread: AIInteraction[]; tone: 'light' | 'dark' }) {
+  const dark = tone === 'dark';
+  const box = dark ? 'bg-slate-950 text-slate-100' : 'bg-amber-50/70 border border-amber-200 text-slate-700';
+  const label = dark ? 'text-teal-300' : 'text-amber-700';
+  return <div className="space-y-3">
+    <div className={`rounded-lg p-4 text-sm whitespace-pre-wrap leading-6 ${box}`}><div className={`flex items-center gap-2 text-xs font-semibold mb-2 ${label}`}><MessageSquare className="w-3.5 h-3.5" />AI response — {AI_CATEGORY_LABELS[root.category]}</div><div data-track="ai_response" data-interaction-id={root.id}>{root.response}</div></div>
+    {thread.map((t, i) => <div key={t.id} className="space-y-2 pl-4 border-l-2 border-slate-200">
+      <div className="text-sm"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Your follow-up {i + 1}</span><p className="text-slate-800 whitespace-pre-wrap mt-0.5">{t.prompt}</p></div>
+      <div className={`rounded-lg p-3 text-sm whitespace-pre-wrap leading-6 ${box}`}><div className={`text-xs font-semibold mb-1.5 ${label}`}>AI answer</div><div data-track="ai_response" data-interaction-id={t.id}>{t.response}</div></div>
+    </div>)}
+  </div>;
+}
+
+function FollowUpBox({ root, count, max, busy, onSend, accent }: { root: AIInteraction; count: number; max: number; busy: boolean; onSend: (root: AIInteraction, text: string) => Promise<boolean>; accent: { accent: string; accentSoft: string } }) {
+  const [text, setText] = useState('');
+  if (max <= 0) return null;
+  if (count >= max) return <p className="text-xs text-slate-500 mt-3">You have used all {max} follow-up questions for this response. Try applying it, or request new support above.</p>;
+  return <div className="mt-3">
+    <label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Ask a follow-up about this response ({count}/{max})</span>
+      <textarea value={text} onChange={(e) => setText(e.target.value)} data-track="ai_followup" rows={2} placeholder="e.g. Why does the loop stop one number too early?" className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-amber-400" /></label>
+    <div className="mt-2"><ActionButton accent={accent} variant="secondary" icon={busy ? <Loader2 className="animate-spin" /> : <Send />} disabled={busy || !text.trim()} onClick={() => { const sent = text; setText(''); void onSend(root, sent).then((ok) => { if (!ok) setText((current) => current || sent); }); }}>Ask follow-up</ActionButton></div>
+  </div>;
+}
+
+function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms, setForm, scrutinies, code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onSkip, onRevise, tests, thread }: { thread: AIInteraction[]; tests: TestsProps; interactions: AIInteraction[]; selectedResponse: AIInteraction | null; onSelectResponse: (v: AIInteraction) => void; forms: Record<string, ScrutinyForm>; setForm: (interactionId: string, form: ScrutinyForm) => void; scrutinies: ScrutinyResponse[]; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: (action: 'accepted' | 'modified' | 'rejected') => void; onSkip: () => void; onRevise: () => void }) {
   const c = phaseAccent('scrutinise');
   const form: ScrutinyForm = selectedResponse ? (forms[selectedResponse.id] ?? emptyScrutinyForm) : emptyScrutinyForm;
   const showCritique = form.accuracy_judgment === 'incorrect';
@@ -516,7 +613,7 @@ function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms
   return <PhaseCard accent={c} icon={<ShieldCheck />} title="Scrutinise, revise and test" description="Do not simply accept the AI response. Evaluate it, modify your code, test your changes, and record your reasoning. You can also continue here without AI if you have not requested any.">
     {interactions.length > 1 && <div className="mb-4 flex flex-wrap gap-2">{interactions.map((i, idx) => { const num = interactions.length - idx; const active = selectedResponse?.id === i.id; return <button key={i.id} type="button" onClick={() => onSelectResponse(i)} aria-pressed={active} className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${active ? 'border-transparent text-white' : 'border-slate-200 text-slate-600 hover:border-teal-500'}`} style={active ? { backgroundColor: c.accent } : undefined}>{scrutinies.some((s) => s.ai_interaction_id === i.id) ? '✓ ' : ''}Response #{num}</button>; })}</div>}
     {selectedResponse && <>
-    <div className="bg-slate-950 text-slate-100 rounded-lg p-4 text-sm whitespace-pre-wrap leading-6 mb-5" data-track="ai_response" data-interaction-id={selectedResponse.id}><div className="flex items-center gap-2 text-xs font-semibold text-teal-300 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response #{responseNum} — {selectedResponse ? AI_CATEGORY_LABELS[selectedResponse.category] : ''}</div>{selectedResponse.response}</div>
+    <div className="mb-5"><div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Response #{responseNum}{thread.length > 0 ? ` and ${thread.length} follow-up${thread.length === 1 ? '' : 's'}` : ''}</div><ConversationView root={selectedResponse} thread={thread} tone="dark" /></div>
     <div className="space-y-6 mb-5">
       <div><span className="block text-sm font-medium text-slate-700 mb-2">How accurate do you think the AI response is?</span><div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">{ACCURACY_JUDGMENT_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => setAccuracy(option.key)} aria-pressed={form.accuracy_judgment === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.accuracy_judgment === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.accuracy_judgment === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
       <div><span className="block text-sm font-medium text-slate-700 mb-2">What will you do?</span><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{INTENDED_ACTION_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => selectedResponse && setForm(selectedResponse.id, { ...form, intended_action: option.key })} aria-pressed={form.intended_action === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.intended_action === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.intended_action === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
