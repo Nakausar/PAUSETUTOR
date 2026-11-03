@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { responsesLong, responsesWide, type Survey, type SurveyResponse } from './surveys';
 import { TNA_ACTIONS, TNA_CODEBOOK_VERSION, buildLongSequences, buildRelianceSummary, buildTestCalibration, buildWideSequences, type EventRow } from './tnaCodebook';
 
 type ExportCategory =
@@ -16,7 +17,10 @@ type ExportCategory =
   | 'tna_wide'
   | 'session_ai_reliance'
   | 'tna_codebook'
-  | 'test_calibration';
+  | 'test_calibration'
+  | 'surveys'
+  | 'survey_responses_long'
+  | 'survey_responses_wide';
 
 interface ExportRow {
   [key: string]: unknown;
@@ -164,6 +168,29 @@ async function fetchTestCalibration(): Promise<ExportRow[]> {
   return buildTestCalibration(events) as unknown as ExportRow[];
 }
 
+async function fetchSurveyData(): Promise<{ surveys: Survey[]; responses: SurveyResponse[] }> {
+  const [surveys, responses] = await Promise.all([
+    fetchAllRows('surveys', 'id, title, description, kind, required_before_tasks, active, items, created_at', 'created_at'),
+    fetchAllRows('survey_responses', 'id, survey_id, participant_id, answers, started_at, submitted_at', 'submitted_at'),
+  ]);
+  return { surveys: surveys as unknown as Survey[], responses: responses as unknown as SurveyResponse[] };
+}
+
+async function fetchSurveys(): Promise<ExportRow[]> {
+  const { surveys } = await fetchSurveyData();
+  return surveys.map((s) => flattenRow(s as unknown as Record<string, unknown>));
+}
+
+async function fetchSurveyResponsesLong(): Promise<ExportRow[]> {
+  const { surveys, responses } = await fetchSurveyData();
+  return responsesLong(surveys, responses);
+}
+
+async function fetchSurveyResponsesWide(): Promise<ExportRow[]> {
+  const { surveys, responses } = await fetchSurveyData();
+  return responsesWide(surveys, responses);
+}
+
 async function fetchTnaCodebook(): Promise<ExportRow[]> {
   return Object.entries(TNA_ACTIONS).map(([action, definition]) => ({ action, definition, codebook_version: TNA_CODEBOOK_VERSION }));
 }
@@ -184,6 +211,9 @@ const FETCHERS: Record<ExportCategory, () => Promise<ExportRow[]>> = {
   session_ai_reliance: fetchSessionReliance,
   tna_codebook: fetchTnaCodebook,
   test_calibration: fetchTestCalibration,
+  surveys: fetchSurveys,
+  survey_responses_long: fetchSurveyResponsesLong,
+  survey_responses_wide: fetchSurveyResponsesWide,
 };
 
 export async function fetchExportData(category: ExportCategory): Promise<ExportRow[]> {
@@ -218,6 +248,7 @@ export async function exportAllAsZIP() {
     'participants', 'sessions', 'tasks', 'plans', 'event_logs',
     'ai_interactions', 'scrutiny_responses', 'code_snapshots', 'reflections', 'task_outcomes',
     'tna_long', 'tna_wide', 'session_ai_reliance', 'tna_codebook', 'test_calibration',
+    'surveys', 'survey_responses_long', 'survey_responses_wide',
   ];
   for (const cat of categories) {
     const rows = await fetchExportData(cat);

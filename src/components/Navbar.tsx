@@ -18,6 +18,7 @@ export default function Navbar() {
   const researcherLinks = [
     { to: '/researcher', label: 'Overview', icon: LayoutDashboard },
     { to: '/researcher/tasks', label: 'Tasks', icon: FolderOpen },
+    { to: '/researcher/surveys', label: 'Surveys', icon: ClipboardList },
     { to: '/researcher/temporal-analysis', label: 'Temporal Analysis', icon: Clock },
     { to: '/researcher/export', label: 'Export', icon: Download },
     { to: '/researcher/settings', label: 'Settings', icon: Settings },

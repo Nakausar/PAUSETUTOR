@@ -87,6 +87,24 @@ check "tasks default to AI available"                           "$(q "SELECT ai_
 check "researcher can turn AI off for a task"                   "$(result "$(as $RES authenticated "UPDATE tasks SET ai_allowed=false WHERE id='$TASK'")")" "ok"
 as $STU authenticated "UPDATE tasks SET ai_allowed=true WHERE id='$TASK'" >/dev/null
 check "student cannot turn AI back on"                          "$(q "SELECT ai_allowed FROM tasks WHERE id='$TASK'")" "f"
+# ---- Questionnaires ----
+STU2=33333333-3333-4333-8333-333333333333
+q "INSERT INTO auth.users (id, email) VALUES ('$STU2','student2@test.fi')" >/dev/null
+SV=$(lastval "$(as $RES authenticated "INSERT INTO surveys (title, kind, items, active) VALUES ('Pre', 'pre', '[{\"id\":\"q1\",\"text\":\"x\",\"type\":\"likert5\"}]', true) RETURNING id")")
+check "researcher can create a questionnaire"                   "$(q "SELECT count(*) FROM surveys WHERE id='$SV'")" "1"
+check "student cannot create a questionnaire"                   "$(result "$(as $STU authenticated "INSERT INTO surveys (title) VALUES ('Fake')")")" "error"
+DRAFT=$(q "INSERT INTO surveys (title, active) VALUES ('Draft', false) RETURNING id" | head -1)
+check "student sees active questionnaires only"                 "$(lastval "$(as $STU authenticated "SELECT count(*) FROM surveys")")" "1"
+check "student can submit a response"                           "$(result "$(as $STU authenticated "INSERT INTO survey_responses (survey_id, student_id, participant_id, answers) VALUES ('$SV','$STU','P-FORGED','{\"q1\":4}')")")" "ok"
+check "participant_id is taken from the profile, not the browser" "$(q "SELECT participant_id = (SELECT participant_id FROM profiles WHERE id='$STU') FROM survey_responses WHERE student_id='$STU'")" "t"
+check "student cannot submit twice"                             "$(result "$(as $STU authenticated "INSERT INTO survey_responses (survey_id, student_id, answers) VALUES ('$SV','$STU','{}')")")" "error"
+check "student cannot answer an inactive questionnaire"         "$(result "$(as $STU authenticated "INSERT INTO survey_responses (survey_id, student_id, answers) VALUES ('$DRAFT','$STU','{}')")")" "error"
+check "student cannot submit for someone else"                  "$(result "$(as $STU authenticated "INSERT INTO survey_responses (survey_id, student_id, answers) VALUES ('$SV','$STU2','{}')")")" "error"
+as $STU authenticated "UPDATE survey_responses SET answers='{\"q1\":1}' WHERE student_id='$STU'" >/dev/null
+check "student cannot change a submitted response"              "$(q "SELECT answers->>'q1' FROM survey_responses WHERE student_id='$STU'")" "4"
+check "other students cannot see the response"                  "$(lastval "$(as $STU2 authenticated "SELECT count(*) FROM survey_responses")")" "0"
+check "researcher can read all responses"                       "$(lastval "$(as $RES authenticated "SELECT count(*) FROM survey_responses")")" "1"
+
 echo; echo "$pass passed, $fail failed"
 $PA -d postgres -c "DROP DATABASE IF EXISTS $DB" 2>/dev/null
 [ $fail = 0 ]

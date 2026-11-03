@@ -13,7 +13,7 @@
     "predev": "npm run copy-pyodide",
     "prebuild": "npm run copy-pyodide",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "tsx src/lib/temporal/analysis.test.ts && tsx src/lib/researchLogging.test.ts",
+    "test:unit": "tsx src/lib/temporal/analysis.test.ts && tsx src/lib/researchLogging.test.ts && tsx src/lib/surveys.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
