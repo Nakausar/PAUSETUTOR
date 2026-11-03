@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, Plus, Save, UserPlus, X } from 'lucide-react';
+import { Check, FlaskConical, Plus, Save, UserPlus, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
+import TestCaseManager from '@/components/TestCaseManager';
 import type { Task } from '@/lib/types';
 
 interface StudentParticipant {
@@ -32,6 +33,7 @@ export default function TaskManagement() {
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [savingAssignment, setSavingAssignment] = useState(false);
   const [message, setMessage] = useState('');
+  const [testsTask, setTestsTask] = useState<Task | null>(null);
 
   useEffect(() => {
     void loadTasks();
@@ -44,15 +46,16 @@ export default function TaskManagement() {
 
   async function save() {
     if (!profile) return;
-    const { error } = await supabase.from('tasks').insert({ ...form, test_cases: [] });
+    const { data, error } = await supabase.from('tasks').insert({ ...form, test_cases: [] }).select('*').single();
     if (error) {
       setMessage('Could not create the task. Please try again.');
       return;
     }
-    setMessage('Task created.');
+    setMessage('Task created. Now add its test cases.');
     setForm(blank);
     setOpen(false);
     void loadTasks();
+    setTestsTask(data as Task);
   }
 
   async function openAssignment(task: Task) {
@@ -189,18 +192,30 @@ export default function TaskManagement() {
                 <p className="text-sm text-slate-500 mt-1">{task.problem_description}</p>
               </div>
               <div className="flex items-center justify-between sm:flex-col sm:items-end sm:justify-between gap-3 shrink-0">
-                <span className="text-xs text-slate-500 uppercase">{task.language} · {task.difficulty}</span>
+                <span className="text-xs text-slate-500 uppercase">{task.language} · {task.difficulty} · {(task.test_cases ?? []).length} visible test(s)</span>
+                <div className="flex gap-2">
+                <button
+                  onClick={() => setTestsTask(task)}
+                  className="flex items-center gap-2 border border-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
+                >
+                  <FlaskConical className="w-4 h-4" /> Test cases
+                </button>
                 <button
                   onClick={() => void openAssignment(task)}
                   className="flex items-center gap-2 bg-slate-900 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors"
                 >
                   <UserPlus className="w-4 h-4" /> Assign Task
                 </button>
+                </div>
               </div>
             </div>
           </div>
         ))}
       </div>
+
+      {testsTask && (
+        <TestCaseManager task={testsTask} onClose={() => setTestsTask(null)} onSaved={() => void loadTasks()} />
+      )}
 
       {assignmentTask && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4" role="presentation">

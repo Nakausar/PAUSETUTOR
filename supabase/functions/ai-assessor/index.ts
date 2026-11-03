@@ -12,7 +12,7 @@ interface AssessRequest {
   learningObjectives?: string;
   expectedInputs?: string;
   expectedOutputs?: string;
-  testCases?: { input: string; expected: string }[];
+  testCases?: { input: string; expected: string; hidden?: boolean; passed?: boolean }[];
   evidence: {
     plans?: { id: string; plan_text: string; confidence: number | null; version: number | null; created_after_ai: boolean | null }[];
     attempts?: { current_code: string; run_count: number; revision_count: number; last_error: string | null; last_output: string | null }[];
@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
     if (body.expectedOutputs) sections.push(`Expected outputs: ${body.expectedOutputs}`);
     if (body.testCases?.length) {
       sections.push(
-        `Test cases:\n${body.testCases.map((tc, i) => `  ${i + 1}. input=${JSON.stringify(tc.input)} expected=${JSON.stringify(tc.expected)}`).join("\n")}`,
+        `Test cases${body.testCases.some((tc) => tc.passed !== undefined) ? ` (run on the final code: ${body.testCases.filter((tc) => tc.passed).length} of ${body.testCases.length} passed)` : ""}:\n${body.testCases.map((tc, i) => `  ${i + 1}.${tc.hidden ? " [hidden]" : ""} input=${JSON.stringify(tc.input)} expected=${JSON.stringify(tc.expected)} result=${tc.passed === undefined ? "not run" : tc.passed ? "PASS" : "FAIL"}`).join("\n")}`,
       );
     }
 
@@ -117,7 +117,7 @@ Consider:
 Assign marks using this rubric and write constructive programming feedback (what works, what could improve, specific to the code). This feedback WILL be shown to the student after researcher approval.
 
 RUBRIC (total 100):
-- correctness: 0-40 (code correctness against expected inputs/outputs and test cases)
+- correctness: 0-40 (code correctness against expected inputs/outputs and test cases; when test results are given, they are the primary evidence of correctness)
 - approach: 0-20 (problem-solving approach: decomposition, algorithm choice, edge-case handling)
 - quality: 0-20 (code quality: clarity, naming, structure, readability)
 - testing: 0-20 (testing and debugging: runs recorded, errors investigated, test evidence)
