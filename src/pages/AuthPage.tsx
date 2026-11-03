@@ -10,7 +10,7 @@ export default function AuthPage() {
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('student');
+  const role: UserRole = 'student';
   const [consent, setConsent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,33 +105,6 @@ export default function AuthPage() {
 
             {mode === 'signup' && (
               <>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Account Type</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setRole('student')}
-                      className={`py-2.5 px-3 rounded-lg text-sm font-medium border transition-colors ${
-                        role === 'student'
-                          ? 'border-slate-900 bg-slate-900 text-white'
-                          : 'border-slate-200 text-slate-600 hover:border-slate-300'
-                      }`}
-                    >
-                      Student
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRole('researcher')}
-                      className={`py-2.5 px-3 rounded-lg text-sm font-medium border transition-colors ${
-                        role === 'researcher'
-                          ? 'border-slate-900 bg-slate-900 text-white'
-                          : 'border-slate-200 text-slate-600 hover:border-slate-300'
-                      }`}
-                    >
-                      Researcher / Instructor
-                    </button>
-                  </div>
-                </div>
 
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <label className="flex items-start gap-2.5 cursor-pointer">

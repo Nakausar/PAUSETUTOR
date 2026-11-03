@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
 import { runPythonCode } from '@/lib/codeRunner';
+import { callEdgeFunction } from '@/lib/edgeFunctions';
 import { AI_CATEGORIES, AI_CATEGORY_LABELS, AI_HELP_REFLECTION_OPTIONS, PHASE_COLORS, PHASE_LABELS, REFLECT_CONSTANTS, ACCURACY_JUDGMENT_OPTIONS, INTENDED_ACTION_OPTIONS } from '@/lib/constants';
 import PhaseProgress from '@/components/PhaseProgress';
 import type { AICategory, CodeAttempt, Plan, Session, Task, PausePhase, AIInteraction, ScrutinyResponse, AccuracyJudgment, IntendedAction, DifficultyChoice, PerceivedIndependence, AiDisagreement, PerceivedIndependentAbility, PlanConfidence } from '@/lib/types';
@@ -245,12 +246,17 @@ export default function TaskWorkspace() {
     setAiBusy(true); setError(null);
     const prompt = question || `Please provide ${AI_CATEGORY_LABELS[selectedCategory].toLowerCase()} for my current work.`;
     await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'use_ai', eventType: selectedCategory === 'hint' ? 'HINT_REQUEST' : selectedCategory === 'debug' ? 'DEBUG_REQUEST' : selectedCategory === 'solution_request' ? 'SOLUTION_REQUEST' : 'TARGETED_QUESTION', description: `Student requested ${AI_CATEGORY_LABELS[selectedCategory].toLowerCase()}.`, metadata: { interaction_number: aiInteractions.length + 1 } });
-    const settings = await supabase.from('system_settings').select('system_prompt').eq('id', 1).maybeSingle();
-    const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-tutor`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` }, body: JSON.stringify({ systemPrompt: settings.data?.system_prompt, category: selectedCategory, userPrompt: prompt, contextCode: code, contextError: runError, contextPlan: latestPlan, taskTitle: task.title, taskDescription: task.problem_description }) });
-    const data = await response.json() as { response?: string; error?: string };
-    if (!response.ok || !data.response) { setError(data.error ?? 'The AI tutor could not respond.'); setAiBusy(false); return; }
-    const inserted = await supabase.from('ai_interactions').insert({ session_id: session.id, participant_id: profile.participant_id, category: selectedCategory, prompt, response: data.response, context_code: code, context_error: runError, context_plan: latestPlan, full_solution_requested: selectedCategory === 'solution_request' }).select().maybeSingle();
-    const interaction = inserted.data as AIInteraction;
+    let data: { response?: string; error?: string; interaction?: AIInteraction } = {};
+    let ok = false;
+    try {
+      const response = await callEdgeFunction('ai-tutor', { sessionId: session.id, category: selectedCategory, userPrompt: prompt, contextCode: code, contextError: runError });
+      ok = response.ok;
+      data = await response.json().catch(() => ({}));
+    } catch (err) {
+      data = { error: err instanceof Error ? err.message : 'The AI tutor could not respond.' };
+    }
+    if (!ok || !data.response || !data.interaction) { setError(data.error ?? 'The AI tutor could not respond.'); setAiBusy(false); return; }
+    const interaction = data.interaction;
     setAiResponse(interaction); setAiInteractions((current) => [interaction, ...current]);
     await logEvent({ sessionId: session.id, taskId: session.task_id, participantId: profile.participant_id, phase: 'use_ai', eventType: 'AI_RESPONSE', description: 'AI tutor response received.', aiInteractionId: interaction?.id, metadata: { category: selectedCategory, interaction_number: aiInteractions.length + 1 } });
     setAiBusy(false);

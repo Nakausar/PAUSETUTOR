@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { logEvent } from '@/lib/eventLogger';
 import { AI_CATEGORY_LABELS } from '@/lib/constants';
+import { callEdgeFunction } from '@/lib/edgeFunctions';
 import type { Assessment, MetacognitiveRating, AIInteraction, CodeAttempt, CodeSnapshot, Plan, Reflection, ScrutinyResponse, Session, Task } from '@/lib/types';
 
 const RATING_CATEGORIES: { key: string; label: string; helper: string }[] = [
@@ -118,10 +119,7 @@ export default function SessionAssessment() {
     try {
       const ev = await gatherEvidence();
       setEvidence(ev);
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assessor`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
-        body: JSON.stringify({
+      const response = await callEdgeFunction('ai-assessor', {
           taskTitle: session.task.title,
           taskDescription: session.task.problem_description,
           learningObjectives: session.task.learning_objectives,
@@ -136,7 +134,6 @@ export default function SessionAssessment() {
             scrutiny: ev.scrutiny.map((s) => ({ id: s.id, accuracy_judgment: s.accuracy_judgment, intended_action: s.intended_action, critique_text: s.critique_text, action_taken: s.action_taken, produced_expected_result: s.produced_expected_result, ai_interaction_id: s.ai_interaction_id })),
             reflection: ev.reflection ? { difficulty: ev.reflection.difficulty, perceived_independence: ev.reflection.perceived_independence, ai_help_reflection: ev.reflection.ai_help_reflection, perceived_independent_ability: ev.reflection.perceived_independent_ability, most_important_learning: ev.reflection.most_important_learning, next_time_strategy: ev.reflection.next_time_strategy, confidence: ev.reflection.confidence } : null,
           },
-        }),
       });
       const data = await response.json().catch(() => null) as AISuggestion | null;
       if (!response.ok || !data || data.error) {

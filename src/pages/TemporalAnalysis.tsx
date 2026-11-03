@@ -4,8 +4,8 @@ import { Clock, Download, RefreshCw, Filter, ChevronDown, ChevronRight, AlertTri
 import { loadTemporalDataset, invalidateCache, type TemporalDataset } from '@/lib/temporal/dataService';
 import { auditDataQuality, LONG_GAP_MS, type DataQualityReport } from '@/lib/temporal/dataQuality';
 import {
-  ANALYSIS_VERSION, PHASE_COLORS, PHASE_DISPLAY, FIVE_PHASES, fmtDuration, GAP_CAP_MINUTES,
-  buildPhaseSequence, buildFivePhaseSteps, computeTransitionMatrix, computeFivePhaseTransitions, computeSessionDurations, computeSessionIntervals,
+  ANALYSIS_VERSION, PHASE_COLORS, PHASE_DISPLAY, fmtDuration, GAP_CAP_MINUTES,
+  buildPhaseSequence, computeTransitionMatrix, computeFivePhaseTransitions, computeSessionDurations, computeSessionIntervals,
   buildStepTokens, discoverSequences, aiOptionFrequency, repeatedAiPerSession,
   type StepToken, type SessionDurations, type SessionIntervals,
 } from '@/lib/temporal/analysis';
