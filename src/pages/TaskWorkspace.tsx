@@ -7,10 +7,14 @@ import { logEvent } from '@/lib/eventLogger';
 import { runPythonCode, runTestCases, type TestCaseResult } from '@/lib/codeRunner';
 import { preloadPython } from '@/lib/python/browserRunner';
 import CodeEditor from '@/components/CodeEditor';
+import { useActivityTracking } from '@/lib/useActivityTracking';
+import { diffStats } from '@/lib/provenance';
 import { callEdgeFunction } from '@/lib/edgeFunctions';
 import { AI_CATEGORIES, AI_CATEGORY_LABELS, AI_HELP_REFLECTION_OPTIONS, PHASE_COLORS, PHASE_LABELS, REFLECT_CONSTANTS, ACCURACY_JUDGMENT_OPTIONS, INTENDED_ACTION_OPTIONS } from '@/lib/constants';
 import PhaseProgress from '@/components/PhaseProgress';
 import type { AICategory, CodeAttempt, Plan, Session, Task, PausePhase, AIInteraction, ScrutinyResponse, AccuracyJudgment, IntendedAction, DifficultyChoice, PerceivedIndependence, AiDisagreement, PerceivedIndependentAbility, PlanConfidence } from '@/lib/types';
+
+const AUTOSAVE_INTERVAL_MS = 15000;
 
 type PlanForm = { plan_text: string; confidence: PlanConfidence | null };
 type ScrutinyForm = { accuracy_judgment: AccuracyJudgment | ''; intended_action: IntendedAction | ''; critique_text: string };
@@ -68,6 +72,67 @@ export default function TaskWorkspace() {
   useEffect(() => { void loadWorkspace(); }, [sessionId, taskId, profile?.id]);
   // Start downloading Python in the background so the first run is fast.
   useEffect(() => { preloadPython(); }, []);
+
+  // ---- Fine-grained research logging (logging schema v2) --------------------
+  // Refs give the timers below the latest values without restarting them.
+  const lastSnapshotCode = useRef<string | null>(null);
+  const live = useRef({ code, attempt, phase, session, profile, aiInteractions });
+  live.current = { code, attempt, phase, session, profile, aiInteractions };
+
+  useActivityTracking({
+    enabled: Boolean(session && profile && phase !== 'completed'),
+    getResponses: () => live.current.aiInteractions.map((i) => ({ id: i.id, response: i.response })),
+    log: (eventType, description, metadata) => {
+      const { session: s, profile: p, phase: ph } = live.current;
+      if (!s || !p) return;
+      void logEvent({ sessionId: s.id, taskId: s.task_id, participantId: p.participant_id, phase: ph, eventType, description, metadata });
+    },
+  });
+
+  // Autosave: every 15 s, if the code changed, store a snapshot (trigger 'auto')
+  // and log CODE_AUTOSAVED with the size of the change. Also keeps the
+  // student's latest code in code_attempts so a page refresh loses nothing.
+  useEffect(() => {
+    const timer = setInterval(() => { void autosave(); }, AUTOSAVE_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  async function findAttemptId(sessionIdToFind: string): Promise<string | null> {
+    const { data } = await supabase.from('code_attempts').select('id').eq('session_id', sessionIdToFind).order('started_at', { ascending: true }).limit(1).maybeSingle();
+    return (data as { id: string } | null)?.id ?? null;
+  }
+
+  const autosaving = useRef(false);
+  async function autosave() {
+    const { code: current, attempt: att, phase: ph, session: s, profile: p } = live.current;
+    if (!s || !p || autosaving.current) return;
+    if (ph !== 'attempt' && ph !== 'scrutinise') return;
+    const previous = lastSnapshotCode.current;
+    if (previous === null || current === previous) return;
+    autosaving.current = true;
+    try {
+      const payload = { session_id: s.id, participant_id: p.participant_id, current_code: current };
+      const existingId = att?.id ?? await findAttemptId(s.id);
+      const saved = existingId
+        ? await supabase.from('code_attempts').update(payload).eq('id', existingId).select().maybeSingle()
+        : await supabase.from('code_attempts').insert({ ...payload, run_count: 0, revision_count: 0 }).select().maybeSingle();
+      if (saved.error || !saved.data) return;
+      const savedAttempt = saved.data as CodeAttempt;
+      if (!att?.id) setAttempt((current) => current ?? savedAttempt);
+      const snap = await supabase.from('code_snapshots')
+        .insert({ attempt_id: savedAttempt.id, session_id: s.id, participant_id: p.participant_id, code: current, phase: ph, trigger: 'auto' })
+        .select('id').maybeSingle();
+      if (snap.error) return;
+      lastSnapshotCode.current = current;
+      await logEvent({
+        sessionId: s.id, taskId: s.task_id, participantId: p.participant_id, phase: ph, eventType: 'CODE_AUTOSAVED',
+        description: 'Code changed since the last snapshot (autosave).', codeSnapshotId: snap.data?.id ?? null,
+        metadata: { ...diffStats(previous, current), code_length: current.length },
+      });
+    } finally {
+      autosaving.current = false;
+    }
+  }
 
   const planStartLogged = useRef(false);
   const planEditedLogged = useRef(false);
@@ -129,7 +194,14 @@ export default function TaskWorkspace() {
     setPlans(planRows);
     const latest = planRows[0];
     if (latest) setPlanForm({ plan_text: latest.plan_text ?? '', confidence: latest.confidence ?? null });
-    if (attemptResult.data) { setAttempt(attemptResult.data as CodeAttempt); setCode((attemptResult.data as CodeAttempt).current_code); }
+    if (attemptResult.data) {
+      const loadedCode = (attemptResult.data as CodeAttempt).current_code;
+      setAttempt(attemptResult.data as CodeAttempt); setCode(loadedCode); lastSnapshotCode.current = loadedCode;
+    } else {
+      // No attempt yet: start from the task's starter code (previously never shown).
+      const starter = foundTask?.starter_code ?? '';
+      setCode(starter); lastSnapshotCode.current = starter;
+    }
     const aiRows = (aiResult.data ?? []) as AIInteraction[];
     setAiInteractions(aiRows);
     if (aiRows.length > 0) setAiResponse(aiRows[0]);
@@ -200,8 +272,10 @@ export default function TaskWorkspace() {
   async function saveAttemptToDB(nextCode: string, trigger: string, runCount: number, revisionCount: number, lastOutput: string, lastError: string | null): Promise<CodeAttempt | null> {
     if (!session || !profile) return null;
     const payload = { session_id: session.id, participant_id: profile.participant_id, current_code: nextCode, run_count: runCount, revision_count: revisionCount, last_error: lastError, last_output: lastOutput, last_run_at: trigger === 'run' ? new Date().toISOString() : (attempt?.last_run_at ?? null) };
-    const result = attempt?.id
-      ? await supabase.from('code_attempts').update(payload).eq('id', attempt.id).select().maybeSingle()
+    // An autosave may have created the attempt moments ago; reuse it rather than inserting a second row.
+    const attemptId = attempt?.id ?? await findAttemptId(session.id);
+    const result = attemptId
+      ? await supabase.from('code_attempts').update(payload).eq('id', attemptId).select().maybeSingle()
       : await supabase.from('code_attempts').insert(payload).select().maybeSingle();
     if (result.error || !result.data) { setError(result.error?.message ?? 'Could not save attempt.'); return null; }
     return result.data as CodeAttempt;
@@ -210,6 +284,7 @@ export default function TaskWorkspace() {
   async function saveSnapshot(attemptId: string, nextCode: string, trigger: string, runNumber: number, snapOutput: string, snapError: string | null, snapStdin: string) {
     if (!session || !profile) return;
     await supabase.from('code_snapshots').insert({ attempt_id: attemptId, session_id: session.id, participant_id: profile.participant_id, code: nextCode, phase, trigger, output: snapOutput, error: snapError, run_number: runNumber, stdin: snapStdin });
+    lastSnapshotCode.current = nextCode;
   }
 
   async function saveAttempt(nextCode = code, trigger = 'manual') {
@@ -396,7 +471,7 @@ function PlanPhase({ values, setValues, onTextChange, onSave, isRevision, origin
   return <PhaseCard accent={c} icon={<Code2 />} title={isRevision ? `Revising your plan (v${planVersion})` : 'Plan before you build'} description={isRevision ? 'Your earlier plan is kept safely. This saves a new version alongside it.' : 'Take time to think through the problem. Your plan will be available to the AI tutor later, but you remain in control of the solution.'}>
     {isRevision && originalPlanText && <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50/60 p-3.5"><div className="text-xs font-semibold text-blue-800 mb-1">Your original plan (kept as v1)</div><p className="text-sm text-blue-900/80 leading-6 whitespace-pre-wrap">{originalPlanText}</p></div>}
     <div className="space-y-6">
-      <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">{isRevision ? 'What would you like to change or add to your plan?' : 'Briefly describe how you plan to solve this problem.'}</span><textarea value={values.plan_text} onChange={(e) => onTextChange(e.target.value)} placeholder="Describe your approach in 1–3 sentences." rows={4} className="w-full border border-slate-300 rounded-lg p-3 text-sm resize-y focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" /></label>
+      <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">{isRevision ? 'What would you like to change or add to your plan?' : 'Briefly describe how you plan to solve this problem.'}</span><textarea value={values.plan_text} onChange={(e) => onTextChange(e.target.value)} placeholder="Describe your approach in 1–3 sentences." data-track="plan" rows={4} className="w-full border border-slate-300 rounded-lg p-3 text-sm resize-y focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" /></label>
       <div><span className="block text-sm font-medium text-slate-700 mb-2">How confident are you in your plan?</span><div className="flex gap-2">{([1, 2, 3, 4, 5] as PlanConfidence[]).map((value) => <button key={value} type="button" onClick={() => setValues({ ...values, confidence: value })} aria-pressed={values.confidence === value} className={`w-11 h-11 rounded-lg border text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-blue-400 ${values.confidence === value ? 'text-white border-transparent' : 'border-slate-300 text-slate-600 hover:border-blue-400'}`} style={values.confidence === value ? { backgroundColor: c.accent } : undefined}>{value}</button>)}</div><div className="flex justify-between text-xs text-slate-400 mt-1.5 max-w-58"><span>1 = Very unsure</span><span>5 = Very confident</span></div></div>
       <ActionButton accent={c} icon={<Save />} onClick={onSave}>{isRevision ? 'Save revised plan and return to your code' : 'Save plan and begin independent attempt'}</ActionButton>
     </div>
@@ -410,7 +485,7 @@ function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, system
       <div>
         <div className="flex items-center justify-between mb-1.5"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Python editor</span><span className="text-xs text-slate-400">Your code is snapshotted</span></div>
         <CodeEditor value={code} onChange={setCode} height="20rem" onRun={running ? undefined : onRun} />
-        <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-violet-500" /></label></div>
+        <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." data-track="stdin" rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-violet-500" /></label></div>
         <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onSave}>Save attempt</ActionButton></div>
         <TestResultsPanel results={tests.results} />
       </div>
@@ -425,9 +500,9 @@ function AIPhase({ categories, selected, setSelected, question, setQuestion, bus
   return <PhaseCard accent={c} icon={<Sparkles />} title="Use AI strategically" description="Choose the kind of support you need. The tutor sees your plan, code, and errors, and will guide rather than replace your reasoning.">
     {interactions.length > 0 && <div className="mb-5"><div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">AI responses so far</div><div className="flex flex-wrap gap-2">{interactions.map((i, idx) => { const num = interactions.length - idx; const active = selectedResponse?.id === i.id; return <button key={i.id} type="button" onClick={() => onSelectResponse(i)} aria-pressed={active} className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-amber-400 ${active ? 'border-transparent text-white' : 'border-slate-200 text-slate-600 hover:border-amber-400'}`} style={active ? { backgroundColor: c.accent } : undefined}>Response #{num}</button>; })}</div></div>}
     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{categories.map((category) => <button key={category.key} onClick={() => setSelected(category.key)} aria-pressed={selected === category.key} className={`text-left p-3 rounded-lg border transition-colors focus-visible:ring-2 focus-visible:ring-amber-400 ${selected === category.key ? 'border-transparent text-white' : 'border-slate-200 hover:border-amber-400'}`} style={selected === category.key ? { backgroundColor: c.accent } : undefined}><div className="text-sm font-semibold">{category.label}</div><div className={`text-xs mt-1 ${selected === category.key ? 'text-amber-50' : 'text-slate-500'}`}>{category.description}</div></button>)}</div>
-    <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Add a targeted question or context (optional)..." rows={3} className="w-full mt-4 border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-amber-400" />
+    <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Add a targeted question or context (optional)..." data-track="ai_question" rows={3} className="w-full mt-4 border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-amber-400" />
     <div className="flex gap-2 mt-3"><ActionButton accent={c} icon={busy ? <Loader2 className="animate-spin" /> : <Send />} onClick={onRequest} disabled={busy}>Request support</ActionButton>{selectedResponse && <ActionButton accent={c} icon={<ShieldCheck />} variant="secondary" onClick={onContinue}>Review this response in Scrutinise</ActionButton>}</div>
-    {selectedResponse && <div className="mt-5 bg-amber-50/70 border border-amber-200 rounded-lg p-4"><div className="flex items-center gap-2 text-xs font-semibold text-amber-700 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response</div><p className="text-sm text-slate-700 whitespace-pre-wrap leading-6">{selectedResponse.response}</p></div>}
+    {selectedResponse && <div className="mt-5 bg-amber-50/70 border border-amber-200 rounded-lg p-4"><div className="flex items-center gap-2 text-xs font-semibold text-amber-700 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response</div><p className="text-sm text-slate-700 whitespace-pre-wrap leading-6" data-track="ai_response" data-interaction-id={selectedResponse.id}>{selectedResponse.response}</p></div>}
   </PhaseCard>;
 }
 
@@ -441,18 +516,18 @@ function ScrutinyPhase({ interactions, selectedResponse, onSelectResponse, forms
   return <PhaseCard accent={c} icon={<ShieldCheck />} title="Scrutinise, revise and test" description="Do not simply accept the AI response. Evaluate it, modify your code, test your changes, and record your reasoning. You can also continue here without AI if you have not requested any.">
     {interactions.length > 1 && <div className="mb-4 flex flex-wrap gap-2">{interactions.map((i, idx) => { const num = interactions.length - idx; const active = selectedResponse?.id === i.id; return <button key={i.id} type="button" onClick={() => onSelectResponse(i)} aria-pressed={active} className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${active ? 'border-transparent text-white' : 'border-slate-200 text-slate-600 hover:border-teal-500'}`} style={active ? { backgroundColor: c.accent } : undefined}>{scrutinies.some((s) => s.ai_interaction_id === i.id) ? '✓ ' : ''}Response #{num}</button>; })}</div>}
     {selectedResponse && <>
-    <div className="bg-slate-950 text-slate-100 rounded-lg p-4 text-sm whitespace-pre-wrap leading-6 mb-5"><div className="flex items-center gap-2 text-xs font-semibold text-teal-300 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response #{responseNum} — {selectedResponse ? AI_CATEGORY_LABELS[selectedResponse.category] : ''}</div>{selectedResponse.response}</div>
+    <div className="bg-slate-950 text-slate-100 rounded-lg p-4 text-sm whitespace-pre-wrap leading-6 mb-5" data-track="ai_response" data-interaction-id={selectedResponse.id}><div className="flex items-center gap-2 text-xs font-semibold text-teal-300 mb-2"><MessageSquare className="w-3.5 h-3.5" />AI response #{responseNum} — {selectedResponse ? AI_CATEGORY_LABELS[selectedResponse.category] : ''}</div>{selectedResponse.response}</div>
     <div className="space-y-6 mb-5">
       <div><span className="block text-sm font-medium text-slate-700 mb-2">How accurate do you think the AI response is?</span><div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">{ACCURACY_JUDGMENT_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => setAccuracy(option.key)} aria-pressed={form.accuracy_judgment === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.accuracy_judgment === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.accuracy_judgment === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
       <div><span className="block text-sm font-medium text-slate-700 mb-2">What will you do?</span><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{INTENDED_ACTION_OPTIONS.map((option) => <button key={option.key} type="button" onClick={() => selectedResponse && setForm(selectedResponse.id, { ...form, intended_action: option.key })} aria-pressed={form.intended_action === option.key} className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-teal-400 ${form.intended_action === option.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-teal-500'}`} style={form.intended_action === option.key ? { backgroundColor: c.accent } : undefined}>{option.label}</button>)}</div></div>
-      {showCritique && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What do you think is wrong?</span><textarea value={form.critique_text} onChange={(e) => selectedResponse && setForm(selectedResponse.id, { ...form, critique_text: e.target.value })} placeholder="Describe what you think the AI got wrong..." rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-teal-500" /></label>}
+      {showCritique && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What do you think is wrong?</span><textarea value={form.critique_text} onChange={(e) => selectedResponse && setForm(selectedResponse.id, { ...form, critique_text: e.target.value })} placeholder="Describe what you think the AI got wrong..." data-track="critique" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-teal-500" /></label>}
     </div>
     </>}
     <div className="grid lg:grid-cols-2 gap-4">
       <div>
         <div className="flex items-center justify-between mb-1.5"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Your code</span><span className="text-xs text-slate-400">Every save is snapshotted — previous versions are kept</span></div>
         <CodeEditor value={code} onChange={setCode} height="16rem" onRun={running ? undefined : onRun} />
-        <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-teal-500" /></label></div>
+        <div className="mt-3"><label className="block"><span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Program Input (stdin)</span><textarea value={stdin} onChange={(e) => setStdin(e.target.value)} placeholder="Enter input for your program here, one value per line..." data-track="stdin" rows={2} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:ring-2 focus:ring-teal-500" /></label></div>
         <div className="flex flex-wrap gap-2 mt-3"><ActionButton accent={c} icon={running ? <Loader2 className="animate-spin" /> : <Play />} onClick={onRun} disabled={running || tests.running}>Run code</ActionButton>{tests.count > 0 && <ActionButton accent={c} icon={tests.running ? <Loader2 className="animate-spin" /> : <FlaskConical />} variant="secondary" onClick={tests.onRun} disabled={running || tests.running}>Run tests ({tests.count})</ActionButton>}<ActionButton accent={c} icon={<Save />} variant="secondary" onClick={onRevise}>Save revision</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('accepted')} icon={<Check />}>Accept response</ActionButton>}<ActionButton accent={c} onClick={() => onSave('modified')} icon={<Code2 />} variant="secondary">Modify and save</ActionButton>{selectedResponse && <ActionButton accent={c} onClick={() => onSave('rejected')} icon={<AlertCircle />} variant="secondary">Reject suggestion</ActionButton>}</div>
         {selectedResponse && alreadyScrutinised && <p className="text-xs text-slate-400 mt-3">You already scrutinised this response — saving again updates that record.</p>}
         <TestResultsPanel results={tests.results} />
@@ -475,11 +550,11 @@ function ReflectionPhase({ values, setValues, usedAI, onSubmit, onBack, canGoBac
       <div><span className="block text-sm font-medium text-slate-700 mb-2">How much of the problem did you solve independently?</span><div className="grid sm:grid-cols-3 lg:grid-cols-5 gap-2">{REFLECT_CONSTANTS.perceived_independence.map((o) => <button key={o.key} type="button" onClick={() => setValues({ ...values, perceived_independence: values.perceived_independence === o.key ? '' : o.key })} aria-pressed={values.perceived_independence === o.key} className={`px-3 py-2.5 rounded-lg border text-sm text-left transition-colors ${values.perceived_independence === o.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-indigo-400'}`} style={choice(values.perceived_independence === o.key)}>{o.label}</button>)}</div></div>
       {usedAI && <div><span className="block text-sm font-medium text-slate-700 mb-2">How did AI help you?</span><div className="grid sm:grid-cols-2 gap-2">{AI_HELP_REFLECTION_OPTIONS.map((o) => <button key={o.key} type="button" onClick={() => toggleHelp(o.key)} aria-pressed={values.ai_help_reflection.includes(o.key)} className={`px-3 py-2.5 rounded-lg border text-sm text-left transition-colors ${values.ai_help_reflection.includes(o.key) ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-indigo-400'}`} style={choice(values.ai_help_reflection.includes(o.key))}>{o.label}</button>)}</div><p className="text-xs text-slate-400 mt-1.5">Select all that apply.</p></div>}
       {usedAI && <div><span className="block text-sm font-medium text-slate-700 mb-2">Did you disagree with or question any AI suggestion?</span><div className="flex flex-wrap gap-2">{REFLECT_CONSTANTS.ai_disagreement.map((o) => <button key={o.key} type="button" onClick={() => setValues({ ...values, ai_disagreement: values.ai_disagreement === o.key ? '' : o.key })} aria-pressed={values.ai_disagreement === o.key} className={`px-4 py-2.5 rounded-lg border text-sm font-medium transition-colors ${values.ai_disagreement === o.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-indigo-400'}`} style={choice(values.ai_disagreement === o.key)}>{o.label}</button>)}</div></div>}
-      {showDisagreementText && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What did you disagree with?</span><textarea value={values.ai_disagreement_text} onChange={(e) => setValues({ ...values, ai_disagreement_text: e.target.value })} placeholder="Optional: describe what you questioned or disagreed with..." rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>}
+      {showDisagreementText && <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What did you disagree with?</span><textarea value={values.ai_disagreement_text} onChange={(e) => setValues({ ...values, ai_disagreement_text: e.target.value })} placeholder="Optional: describe what you questioned or disagreed with..." data-track="reflection" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>}
       <div><span className="block text-sm font-medium text-slate-700 mb-2">Could you solve a similar problem without AI?</span><div className="grid sm:grid-cols-3 lg:grid-cols-5 gap-2">{REFLECT_CONSTANTS.perceived_independent_ability.map((o) => <button key={o.key} type="button" onClick={() => setValues({ ...values, perceived_independent_ability: values.perceived_independent_ability === o.key ? '' : o.key })} aria-pressed={values.perceived_independent_ability === o.key} className={`px-3 py-2.5 rounded-lg border text-sm text-left transition-colors ${values.perceived_independent_ability === o.key ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-indigo-400'}`} style={choice(values.perceived_independent_ability === o.key)}>{o.label}</button>)}</div></div>
       <div><span className="block text-sm font-medium text-slate-700 mb-2">How confident are you that you could solve a similar problem independently?</span><div className="flex gap-2">{([1, 2, 3, 4, 5] as PlanConfidence[]).map((value) => <button key={value} type="button" onClick={() => setValues({ ...values, confidence: value })} aria-pressed={values.confidence === value} className={`w-11 h-11 rounded-lg border text-sm font-semibold transition-colors ${values.confidence === value ? 'border-transparent text-white' : 'border-slate-300 text-slate-600 hover:border-indigo-400'}`} style={choice(values.confidence === value)}>{value}</button>)}</div><div className="flex justify-between text-xs text-slate-400 mt-1.5 max-w-58"><span>1 = Not confident</span><span>5 = Very confident</span></div></div>
-      <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What is the most important thing you learned from this problem?</span><textarea value={values.most_important_learning} onChange={(e) => setValues({ ...values, most_important_learning: e.target.value })} placeholder="1–3 sentences" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>
-      <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What would you do differently next time?</span><textarea value={values.next_time_strategy} onChange={(e) => setValues({ ...values, next_time_strategy: e.target.value })} placeholder="1–3 sentences" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>
+      <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What is the most important thing you learned from this problem?</span><textarea value={values.most_important_learning} onChange={(e) => setValues({ ...values, most_important_learning: e.target.value })} placeholder="1–3 sentences" data-track="reflection" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>
+      <label className="block"><span className="block text-sm font-medium text-slate-700 mb-1.5">What would you do differently next time?</span><textarea value={values.next_time_strategy} onChange={(e) => setValues({ ...values, next_time_strategy: e.target.value })} placeholder="1–3 sentences" data-track="reflection" rows={3} className="w-full border border-slate-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>
       <div className="flex flex-wrap gap-2">{canGoBack && <ActionButton accent={c} variant="secondary" icon={<ArrowLeft />} onClick={onBack}>Back to my code</ActionButton>}<ActionButton accent={c} icon={<Check />} onClick={onSubmit}>Complete task and save reflection</ActionButton></div>
     </div>
   </PhaseCard>;

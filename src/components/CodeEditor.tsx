@@ -84,5 +84,5 @@ export default function CodeEditor({ value, onChange, height = '20rem', onRun, a
     }
   }, [value]);
 
-  return <div ref={hostRef} className="rounded-lg overflow-hidden border border-slate-800 focus-within:ring-2 focus-within:ring-violet-500/60" />;
+  return <div ref={hostRef} data-track="code" className="rounded-lg overflow-hidden border border-slate-800 focus-within:ring-2 focus-within:ring-violet-500/60" />;
 }

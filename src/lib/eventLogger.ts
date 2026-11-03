@@ -25,6 +25,7 @@ interface LogEventParams {
 // development double-mount and double-firing effects for every call site,
 // including ones without a natural idempotency key.
 const DUPLICATE_WINDOW_MS = 1500;
+export const LOG_SCHEMA_VERSION = 2;
 const recentSignatures = new Map<string, number>();
 
 function sweepRecentSignatures(now: number) {
@@ -46,9 +47,11 @@ export async function logEvent(params: LogEventParams): Promise<string | null> {
   if (recentSignatures.has(signature)) return null;
   recentSignatures.set(signature, now);
 
+  // log_schema 2 = events recorded after the day 3 logging update
+  // (autosave snapshots, paste provenance, focus and idle events).
   const metadata = params.idempotencyKey
-    ? { ...params.metadata, idem_key: params.idempotencyKey }
-    : params.metadata;
+    ? { ...params.metadata, idem_key: params.idempotencyKey, log_schema: LOG_SCHEMA_VERSION }
+    : { ...params.metadata, log_schema: LOG_SCHEMA_VERSION };
   const { data, error } = await supabase
     .from('event_logs')
     .insert({
