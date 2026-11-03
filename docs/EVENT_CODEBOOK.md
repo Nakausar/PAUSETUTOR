@@ -16,6 +16,10 @@ Every learner action is stored as one row in `event_logs`:
 
 **Duplicate protection.** The app suppresses identical events fired twice within 1.5 seconds, and the database rejects repeated events with the same `metadata.idem_key`. The in-app temporal analysis additionally removes analytical duplicates (see `dedupeEvents` in `src/lib/temporal/analysis.ts`) and reports how many it excluded.
 
+## Tasks without AI
+
+Tasks with `tasks.ai_allowed = false` (shown as **No AI**) are completed Plan → Attempt → Evaluate: Use AI and Scrutinise stay locked and the ai-tutor function refuses requests. Use such a task as an unaided final task (a learning-outcome measure) or as a comparison condition; the Tasks export includes `ai_allowed`, so sessions can be grouped by condition.
+
 ## Session and phase navigation
 
 | Event | When | Metadata |

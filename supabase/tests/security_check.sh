@@ -3,7 +3,8 @@
 #
 # SETUP=update (default): existing project
 #   1. Applies the original (Bolt-era) migrations, i.e. the state of an existing project.
-#   2. Applies supabase/manual/apply_2026-11_updates.sql twice (it must be repeatable).
+#   2. Applies supabase/manual/apply_2026-11_updates.sql, then apply_2026-11_updates_2.sql,
+#      each twice (they must be repeatable).
 # SETUP=full: new, empty project
 #   1. Applies supabase/manual/full_setup.sql once.
 # Then runs queries the way the app sends them (role `authenticated` + JWT claims)
@@ -29,7 +30,9 @@ else
 n=0; for f in $(ls $REPO/supabase/migrations/*.sql | sort); do case $(basename $f) in 2026110*) continue;; esac
   if $PA -d $DB -f "$f" >/dev/null 2>"$TMP/mig.err"; then n=$((n+1)); else echo "FAILED original migration $f"; grep -v NOTICE "$TMP/mig.err" | head -3; exit 1; fi; done
 echo "Original Bolt migrations applied: $n"
-for run in 1 2; do $PA -d $DB -f "$REPO/supabase/manual/apply_2026-11_updates.sql" >/dev/null 2>"$TMP/c.err" && echo "Combined update, run $run: OK" || { echo "Combined update, run $run: FAILED"; grep -v NOTICE "$TMP/c.err" | head; exit 1; }; done
+for upd in apply_2026-11_updates.sql apply_2026-11_updates_2.sql; do
+  for run in 1 2; do $PA -d $DB -f "$REPO/supabase/manual/$upd" >/dev/null 2>"$TMP/c.err" && echo "$upd, run $run: OK" || { echo "$upd, run $run: FAILED"; grep -v NOTICE "$TMP/c.err" | head; exit 1; }; done
+done
 fi
 
 STU=11111111-1111-4111-8111-111111111111; RES=22222222-2222-4222-8222-222222222222
@@ -80,6 +83,10 @@ check "settings have the gate defaults"                         "$(q "SELECT sol
 check "researcher can change gate settings"                     "$(result "$(as $RES authenticated "UPDATE system_settings SET solution_min_minutes=5 WHERE id=1")")" "ok"
 as $STU authenticated "UPDATE system_settings SET solution_min_minutes=0 WHERE id=1" >/dev/null
 check "student cannot change settings"                          "$(q "SELECT solution_min_minutes FROM system_settings WHERE id=1")" "5"
+check "tasks default to AI available"                           "$(q "SELECT ai_allowed FROM tasks WHERE id='$TASK'")" "t"
+check "researcher can turn AI off for a task"                   "$(result "$(as $RES authenticated "UPDATE tasks SET ai_allowed=false WHERE id='$TASK'")")" "ok"
+as $STU authenticated "UPDATE tasks SET ai_allowed=true WHERE id='$TASK'" >/dev/null
+check "student cannot turn AI back on"                          "$(q "SELECT ai_allowed FROM tasks WHERE id='$TASK'")" "f"
 echo; echo "$pass passed, $fail failed"
 $PA -d postgres -c "DROP DATABASE IF EXISTS $DB" 2>/dev/null
 [ $fail = 0 ]

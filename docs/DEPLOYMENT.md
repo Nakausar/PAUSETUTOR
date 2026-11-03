@@ -15,7 +15,9 @@ No command-line tools needed.
    * **Error "relation public.profiles does not exist"** (new, empty project): paste all of [`supabase/manual/full_setup.sql`](../supabase/manual/full_setup.sql) into a new query → Run.
    * **A number** (project already used by Bolt): paste all of [`supabase/manual/apply_2026-11_updates.sql`](../supabase/manual/apply_2026-11_updates.sql) → Run, then run the researcher checks at the bottom of that file.
 
-   Both files run as one transaction, so a failed run changes nothing.
+   * **Set up before 2026-11-08** (with either file above): also run [`supabase/manual/apply_2026-11_updates_2.sql`](../supabase/manual/apply_2026-11_updates_2.sql) for the later additions (e.g. tasks without AI). `full_setup.sql` already includes them.
+
+   All these files run as one transaction, so a failed run changes nothing, and they are safe to run again.
 2. **Auth:** Authentication → Sign In / Providers → Email → turn on **Confirm email**.
 3. **Edge functions:** in GitHub → Settings → Secrets and variables → Actions, add `SUPABASE_ACCESS_TOKEN` (supabase.com → Account → Access Tokens) and `SUPABASE_PROJECT_REF`. Then Actions → **Deploy Supabase edge functions** → Run workflow. Later changes to the functions deploy automatically.
 4. **Secrets:** Supabase → Edge Functions → Secrets: `OPENAI_API_KEY` (and later `ALLOWED_ORIGIN`).

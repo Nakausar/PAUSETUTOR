@@ -1,0 +1,12 @@
+/*
+  PAUSE AI Tutor: research additions (second update, November 2026)
+  ===================================================================
+
+  For a project that already has the PAUSE tables, i.e. set up with
+  full_setup.sql or apply_2026-11_updates.sql before 2026-11-08.
+  (A new, empty project only needs full_setup.sql, which already includes this.)
+
+  Paste this whole file into Supabase → SQL Editor → New query and click Run.
+  It runs as one transaction and is safe to run again.
+
+  Contents (identical to these files in supabase/migrations/):

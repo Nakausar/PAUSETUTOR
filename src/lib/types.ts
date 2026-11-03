@@ -133,6 +133,8 @@ export interface Task {
   expected_outputs: string;
   starter_code: string;
   test_cases: TestCase[];
+  /** False for tasks completed without the AI tutor (Plan → Attempt → Evaluate). */
+  ai_allowed?: boolean;
   concept_tags: string;
   created_by: string | null;
   created_at: string;

@@ -87,7 +87,7 @@ async function fetchSessions(): Promise<ExportRow[]> {
 }
 
 async function fetchTasks(): Promise<ExportRow[]> {
-  const data = await fetchAllRows('tasks', 'id, title, language, difficulty, learning_objectives, problem_description, expected_inputs, expected_outputs, concept_tags, created_at', 'created_at');
+  const data = await fetchAllRows('tasks', 'id, title, language, difficulty, ai_allowed, learning_objectives, problem_description, expected_inputs, expected_outputs, concept_tags, created_at', 'created_at');
   return data.map(flattenRow);
 }
 

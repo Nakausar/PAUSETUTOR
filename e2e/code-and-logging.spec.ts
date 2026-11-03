@@ -156,3 +156,29 @@ test('optional scrutiny answers are saved and logged when given', async ({ page 
   const types = db.event_logs.map((e) => e.event_type);
   expect(types).toEqual(expect.arrayContaining(['INTENDED_AI_UPTAKE', 'AI_CRITIQUE_TEXT', 'AI_SUGGESTION_REJECTED']));
 });
+
+test('a task without AI goes Plan → Attempt → Evaluate and keeps Use AI locked', async ({ page }) => {
+  const db = studentFixture('attempt', { code: 'print(0)\n' });
+  db.tasks[0].ai_allowed = false;
+  await installMockSupabase(page, db, { user });
+  await page.goto('/#/task/sess-1');
+  await expect(page.getByText('No AI for this task.')).toBeVisible();
+  const phases = page.getByRole('navigation', { name: 'PAUSE phases' });
+  await expect(phases.getByRole('button', { name: /Use AI/ })).toBeDisabled();
+  await expect(phases.getByRole('button', { name: /Scrutinise/ })).toBeDisabled();
+  await page.getByRole('button', { name: 'Save attempt and continue to reflection' }).click();
+  await expect.poll(() => db.sessions[0].current_phase).toBe('evaluate');
+  // The phase is saved first and the transition event is logged just after it.
+  await expect.poll(() => db.event_logs.find((e) => e.event_type === 'PHASE_TRANSITION')?.metadata).toMatchObject({ from: 'attempt', to: 'evaluate' });
+});
+
+test('a no-AI session restored in Use AI offers to continue to Evaluate', async ({ page }) => {
+  const db = studentFixture('use_ai', { code: 'print(0)\n' });
+  db.tasks[0].ai_allowed = false;
+  await installMockSupabase(page, db, { user });
+  await page.goto('/#/task/sess-1');
+  await expect(page.getByText('The AI tutor is not available for this task.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Request support' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Continue to Evaluate' }).click();
+  await expect.poll(() => db.sessions[0].current_phase).toBe('evaluate');
+});

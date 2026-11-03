@@ -249,15 +249,18 @@ export default function TaskWorkspace() {
   // Scrutinise is available once an AI response exists — but is never mandatory: a student who does not use AI
   // goes straight from Attempt to Evaluate. All conditions are monotonic (once true they stay true), so unlocked
   // phases never re-lock before completion.
+  // Tasks without the AI tutor: Plan → Attempt → Evaluate.
+  const aiAllowed = task?.ai_allowed !== false;
+
   function enabledPhases(): Set<PausePhase> {
     const planSubmitted = originalPlan !== null || latestPlan !== null;
     const meaningfulAttempt = Boolean(attempt && attempt.current_code.trim().length > 0);
     const hasAiResponse = aiInteractions.length > 0;
     const unlocked = new Set<PausePhase>(['plan']);
     if (planSubmitted) unlocked.add('attempt');
-    if (planSubmitted && meaningfulAttempt) unlocked.add('use_ai');
-    if (planSubmitted && meaningfulAttempt) unlocked.add('scrutinise');
-    if (hasAiResponse) unlocked.add('scrutinise');
+    if (aiAllowed && planSubmitted && meaningfulAttempt) unlocked.add('use_ai');
+    if (aiAllowed && planSubmitted && meaningfulAttempt) unlocked.add('scrutinise');
+    if (aiAllowed && hasAiResponse) unlocked.add('scrutinise');
     if (planSubmitted && meaningfulAttempt) unlocked.add('evaluate');
     return unlocked;
   }
@@ -526,7 +529,9 @@ export default function TaskWorkspace() {
   async function saveAttemptAndContinue() {
     if (!code.trim()) { setError('Please make a meaningful coding attempt before continuing.'); return; }
     const saved = await saveAttempt();
-    if (saved) { await transition('use_ai', 'Meaningful independent attempt saved; AI assistance unlocked.'); }
+    if (!saved) return;
+    if (aiAllowed) await transition('use_ai', 'Meaningful independent attempt saved; AI assistance unlocked.');
+    else await transition('evaluate', 'Attempt saved. This task is completed without the AI tutor; continue to your reflection.');
   }
 
   const enabled = enabledPhases();
@@ -545,12 +550,14 @@ export default function TaskWorkspace() {
     <button onClick={() => navigate('/dashboard')} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-900 mb-4"><ArrowLeft className="w-4 h-4" /> Back to dashboard</button>
     <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5"><div className="flex items-start justify-between gap-4"><div><div className="flex items-center gap-2 mb-1"><span className="font-mono text-xs text-slate-400">{task.language.toUpperCase()}</span><span className="text-xs text-slate-400">{task.difficulty}</span></div><h1 className="text-2xl font-bold text-slate-900">{task.title}</h1></div><div className="text-right text-xs text-slate-500">Session<br /><span className="font-mono">{session.id.slice(0, 8)}</span></div></div><p className="text-sm text-slate-600 mt-4 leading-6">{task.problem_description}</p><div className="grid md:grid-cols-2 gap-3 mt-4 text-xs"><div className="bg-slate-50 rounded-lg p-3"><strong className="text-slate-700">Expected inputs</strong><p className="text-slate-500 mt-1">{task.expected_inputs || 'Not specified'}</p></div><div className="bg-slate-50 rounded-lg p-3"><strong className="text-slate-700">Expected outputs</strong><p className="text-slate-500 mt-1">{task.expected_outputs || 'Not specified'}</p></div></div></div>
     <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 mb-5"><PhaseProgress currentPhase={phase} completedPhases={completedPhases} enabledPhases={enabled} visitCounts={visitCounts} onPhaseSelect={goToPhase} size="md" /><div className="text-center text-xs text-slate-500 mt-3">Current phase: <span className="font-semibold" style={{ color: PHASE_COLORS[phase].accent }}>{PHASE_LABELS[phase]}</span></div></div>
+    {!aiAllowed && <div className="mb-4 bg-slate-100 border border-slate-300 rounded-lg p-3 text-sm text-slate-700 flex gap-2" role="note"><Lock className="w-4 h-4 shrink-0 mt-0.5" /><span><strong>No AI for this task.</strong> Solve it on your own: plan, write and test your code, then reflect. The AI tutor is not available.</span></div>}
+    {!aiAllowed && (phase === 'use_ai' || phase === 'scrutinise') && <div className="mb-4 bg-white border border-slate-200 rounded-xl p-5 text-sm text-slate-700">The AI tutor is not available for this task. <button type="button" onClick={() => void transition('evaluate', 'This task is completed without the AI tutor.', 'manual')} className="ml-2 underline font-medium">Continue to Evaluate</button></div>}
     {notice && <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700">{notice}</div>}
     {error && <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex gap-2"><AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}
     {phase === 'plan' && <PlanPhase values={planForm} setValues={setPlanForm} onTextChange={handlePlanTextChange} onSave={savePlan} isRevision={plans.length > 0} originalPlanText={originalPlan?.plan_text ?? null} planVersion={planVersion} />}
-    {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: startTestPrediction, predicting: predictingSince !== null, onPredict: runTests, onCancelPrediction: () => setPredictingSince(null) }} />}
-    {phase === 'use_ai' && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} onFollowUp={requestFollowUp} followUpBusy={followUpBusy} maxFollowups={gateSettings.max_followups} gate={gateSettings} runCount={attempt?.run_count ?? 0} startedAt={attempt?.started_at ?? null} solutionReason={solutionReason} setSolutionReason={setSolutionReason} />}
-    {phase === 'scrutinise' && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={saveRevisionAndContinue} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: startTestPrediction, predicting: predictingSince !== null, onPredict: runTests, onCancelPrediction: () => setPredictingSince(null) }} />}
+    {phase === 'attempt' && <AttemptPhase code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={() => saveAttempt()} onContinue={saveAttemptAndContinue} aiAllowed={aiAllowed} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: startTestPrediction, predicting: predictingSince !== null, onPredict: runTests, onCancelPrediction: () => setPredictingSince(null) }} />}
+    {phase === 'use_ai' && aiAllowed && <AIPhase categories={AI_CATEGORIES} selected={selectedCategory} setSelected={setSelectedCategory} question={question} setQuestion={setQuestion} busy={aiBusy} interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} onRequest={requestAI} onContinue={hasUnscrutinisedAI ? () => goToPhase('scrutinise') : () => goToPhase('scrutinise')} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} onFollowUp={requestFollowUp} followUpBusy={followUpBusy} maxFollowups={gateSettings.max_followups} gate={gateSettings} runCount={attempt?.run_count ?? 0} startedAt={attempt?.started_at ?? null} solutionReason={solutionReason} setSolutionReason={setSolutionReason} />}
+    {phase === 'scrutinise' && aiAllowed && <ScrutinyPhase interactions={aiInteractions} selectedResponse={aiResponse} onSelectResponse={setAiResponse} forms={scrutinyForms} setForm={setScrutinyFor} scrutinies={scrutinies} code={code} setCode={setCode} stdin={stdin} setStdin={setStdin} output={output} runError={runError} systemError={systemError} running={running} onRun={runCode} onSave={saveScrutiny} onSkip={saveRevisionAndContinue} onRevise={saveRevision} thread={aiResponse ? followUps[aiResponse.id] ?? [] : []} tests={{ count: task?.test_cases?.length ?? 0, running: testing, results: testResults, onRun: startTestPrediction, predicting: predictingSince !== null, onPredict: runTests, onCancelPrediction: () => setPredictingSince(null) }} />}
     {phase === 'evaluate' && <ReflectionPhase values={reflectionForm} setValues={setReflectionForm} usedAI={usedAI} onSubmit={submitReflection} onBack={() => goToPhase('scrutinise')} canGoBack={enabled.has('scrutinise')} />}
   </div>;
 }
@@ -569,7 +576,7 @@ function PlanPhase({ values, setValues, onTextChange, onSave, isRevision, origin
   </PhaseCard>;
 }
 
-function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onContinue, tests }: { tests: TestsProps; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: () => void; onContinue: () => void }) {
+function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, systemError, running, onRun, onSave, onContinue, tests, aiAllowed }: { aiAllowed: boolean; tests: TestsProps; code: string; setCode: (v: string) => void; stdin: string; setStdin: (v: string) => void; output: string; runError: string | null; systemError: boolean; running: boolean; onRun: () => void; onSave: () => void; onContinue: () => void }) {
   const c = phaseAccent('attempt');
   return <PhaseCard accent={c} icon={<Terminal />} title="Make your independent attempt" description="Work on the problem before asking the AI tutor. Correctness is not required yet; meaningful effort is.">
     <div className="grid lg:grid-cols-2 gap-4">
@@ -583,7 +590,7 @@ function AttemptPhase({ code, setCode, stdin, setStdin, output, runError, system
       </div>
       <OutputPanel output={output} error={runError} systemError={systemError} />
     </div>
-    <div className="border-t border-slate-100 pt-4 mt-4"><ActionButton accent={c} icon={<ChevronRight />} onClick={onContinue}>Save attempt and unlock structured AI help</ActionButton></div>
+    <div className="border-t border-slate-100 pt-4 mt-4"><ActionButton accent={c} icon={<ChevronRight />} onClick={onContinue}>{aiAllowed ? 'Save attempt and unlock structured AI help' : 'Save attempt and continue to reflection'}</ActionButton></div>
   </PhaseCard>;
 }
 
