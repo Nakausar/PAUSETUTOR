@@ -76,10 +76,13 @@ Deno.serve(async (req: Request) => {
     // The session must belong to the caller.
     const { data: session } = await db
       .from("sessions")
-      .select("id, student_id, participant_id, task:tasks(title, problem_description)")
+      .select("id, student_id, participant_id, task:tasks(*)")
       .eq("id", body.sessionId)
       .maybeSingle();
     if (!session || session.student_id !== caller.user.id) return json({ error: "Session not found." }, 404);
+    if ((session.task as { ai_allowed?: boolean } | null)?.ai_allowed === false) {
+      return json({ error: "The AI tutor is not available for this task. Please solve it on your own." }, 403);
+    }
 
     // Rolling 24-hour limit per student.
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();

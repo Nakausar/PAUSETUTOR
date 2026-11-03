@@ -76,5 +76,5 @@ jobs:
         run: bash supabase/tests/security_check.sh
       - name: Full setup on an empty project and row-level security
         run: SETUP=full bash supabase/tests/security_check.sh
-      - name: full_setup.sql is up to date with supabase/migrations
-        run: bash scripts/build-full-setup.sh && git diff --exit-code supabase/manual/full_setup.sql
+      - name: Copy-paste SQL files are up to date with supabase/migrations
+        run: bash scripts/build-full-setup.sh && git diff --exit-code supabase/manual/

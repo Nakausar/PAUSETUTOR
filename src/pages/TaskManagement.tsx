@@ -20,6 +20,7 @@ const blank = {
   expected_outputs: '',
   starter_code: '',
   concept_tags: '',
+  ai_allowed: true,
 };
 
 export default function TaskManagement() {
@@ -56,6 +57,13 @@ export default function TaskManagement() {
     setOpen(false);
     void loadTasks();
     setTestsTask(data as Task);
+  }
+
+  async function toggleAi(task: Task) {
+    const next = task.ai_allowed === false;
+    const { error } = await supabase.from('tasks').update({ ai_allowed: next }).eq('id', task.id);
+    setMessage(error ? 'Could not change the AI setting. Has the latest database update been applied?' : `"${task.title}": AI tutor ${next ? 'available' : 'not available'}.`);
+    if (!error) void loadTasks();
   }
 
   async function openAssignment(task: Task) {
@@ -177,6 +185,10 @@ export default function TaskManagement() {
               </label>
             ))}
           </div>
+          <label className="flex items-start gap-2 mt-4 text-sm text-slate-700">
+            <input type="checkbox" checked={form.ai_allowed} onChange={(e) => setForm({ ...form, ai_allowed: e.target.checked })} className="mt-0.5" />
+            <span><strong>AI tutor available</strong> for this task. Untick for an unaided task (Plan → Attempt → Evaluate), e.g. a final task without AI.</span>
+          </label>
           <button onClick={() => void save()} className="mt-4 flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg text-sm">
             <Save className="w-4 h-4" /> Save task
           </button>
@@ -192,8 +204,16 @@ export default function TaskManagement() {
                 <p className="text-sm text-slate-500 mt-1">{task.problem_description}</p>
               </div>
               <div className="flex items-center justify-between sm:flex-col sm:items-end sm:justify-between gap-3 shrink-0">
-                <span className="text-xs text-slate-500 uppercase">{task.language} · {task.difficulty} · {(task.test_cases ?? []).length} visible test(s)</span>
+                <span className="text-xs text-slate-500 uppercase flex items-center gap-2">{task.language} · {task.difficulty} · {(task.test_cases ?? []).length} visible test(s){task.ai_allowed === false && <span className="normal-case px-2 py-0.5 rounded-full bg-slate-900 text-white font-medium">No AI</span>}</span>
                 <div className="flex gap-2">
+                <button
+                  onClick={() => void toggleAi(task)}
+                  aria-pressed={task.ai_allowed !== false}
+                  title={task.ai_allowed === false ? 'Students solve this task without the AI tutor' : 'Students can use the AI tutor'}
+                  className="flex items-center gap-2 border border-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
+                >
+                  {task.ai_allowed === false ? 'AI: off' : 'AI: on'}
+                </button>
                 <button
                   onClick={() => setTestsTask(task)}
                   className="flex items-center gap-2 border border-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
