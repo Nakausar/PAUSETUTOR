@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, ClipboardCheck, Inbox, Play, ChevronRight, Award, Clock, FileCode } from 'lucide-react';
+import { CheckCircle2, ClipboardCheck, ClipboardList, Inbox, Lock, Play, ChevronRight, Award, Clock, FileCode } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import PhaseProgress from '@/components/PhaseProgress';
 import { PHASE_LABELS } from '@/lib/constants';
 import type { Assessment, Session, Task, TaskAssignment, PausePhase } from '@/lib/types';
+import { loadSurveyStatus, type SurveyStatus } from '@/lib/surveyGate';
 
 interface DashboardTask {
   session: Session | null;
@@ -17,6 +18,7 @@ export default function StudentDashboard() {
   const { profile } = useAuth();
   const [tasks, setTasks] = useState<DashboardTask[]>([]);
   const [assessments, setAssessments] = useState<Map<string, Assessment>>(new Map());
+  const [surveyStatus, setSurveyStatus] = useState<SurveyStatus>({ pending: [], blocking: [] });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -46,6 +48,8 @@ export default function StudentDashboard() {
 
     setTasks(dashboardTasks);
     setAssessments(assessmentMap);
+    const allDone = dashboardTasks.length > 0 && dashboardTasks.every((t) => t.session?.status === 'completed');
+    setSurveyStatus(await loadSurveyStatus(profile.id, allDone));
     setLoading(false);
   }
 
@@ -76,6 +80,21 @@ export default function StudentDashboard() {
           Participant ID: <span className="font-mono font-medium text-slate-700">{profile?.participant_id}</span>
         </p>
       </div>
+
+      {/* Questionnaires */}
+      {surveyStatus.pending.length > 0 && (
+        <section aria-labelledby="surveys-heading" className="bg-amber-50 border border-amber-200 rounded-xl p-5">
+          <h2 id="surveys-heading" className="text-base font-bold text-navy-900 flex items-center gap-2"><ClipboardList className="w-4 h-4" /> Questionnaires to complete</h2>
+          {surveyStatus.blocking.length > 0 && <p className="text-sm text-amber-900 mt-1">Please complete this before starting your tasks.</p>}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {surveyStatus.pending.map((s) => (
+              <Link key={s.id} to={`/survey/${s.id}`} className="inline-flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800">
+                {s.title} <ChevronRight className="w-4 h-4" />
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Summary tiles */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -129,7 +148,7 @@ export default function StudentDashboard() {
       )}
 
       {inProgress.length > 0 && <TaskSection title="Pending — In Progress" tasks={inProgress} getCompletedPhases={getCompletedPhases} />}
-      {notStarted.length > 0 && <TaskSection title="Pending — Not Started" tasks={notStarted} getCompletedPhases={getCompletedPhases} showStart />}
+      {notStarted.length > 0 && <TaskSection title="Pending — Not Started" tasks={notStarted} getCompletedPhases={getCompletedPhases} showStart locked={surveyStatus.blocking.length > 0} />}
       {completed.length > 0 && <TaskSection title="Completed" tasks={completed} getCompletedPhases={getCompletedPhases} showCompleted assessments={assessments} />}
     </div>
   );
@@ -151,6 +170,7 @@ function TaskSection({
   showStart,
   showCompleted,
   assessments,
+  locked,
 }: {
   title: string;
   tasks: DashboardTask[];
@@ -158,17 +178,20 @@ function TaskSection({
   showStart?: boolean;
   showCompleted?: boolean;
   assessments?: Map<string, Assessment>;
+  /** Not-started tasks cannot be opened yet (a required questionnaire is pending). */
+  locked?: boolean;
 }) {
   return (
     <div className="mb-2">
       <h2 className="text-sm font-semibold text-navy-900 mb-3">{title}</h2>
       <div className="space-y-2">
-        {tasks.map(({ task, session }) => (
-          <Link
-            key={task.id}
-            to={session ? `/task/${session.id}` : `/task/start/${task.id}`}
-            className="block bg-white rounded-lg border border-slate-200 p-4 hover:border-blue-300 hover:shadow-sm transition-all group"
-          >
+        {tasks.map(({ task, session }) => {
+          const isLocked = Boolean(locked && !session);
+          const Card = ({ children }: { children: React.ReactNode }) => isLocked
+            ? <div aria-disabled="true" title="Complete the questionnaire first" className="block bg-white rounded-lg border border-slate-200 p-4 opacity-60 cursor-not-allowed">{children}</div>
+            : <Link to={session ? `/task/${session.id}` : `/task/start/${task.id}`} className="block bg-white rounded-lg border border-slate-200 p-4 hover:border-blue-300 hover:shadow-sm transition-all group">{children}</Link>;
+          return (
+          <Card key={task.id}>
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
@@ -201,16 +224,18 @@ function TaskSection({
                 )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                {showStart && (
-                  <span className="flex items-center gap-1 text-xs text-slate-500 group-hover:text-blue-700">
+                {showStart && (isLocked
+                  ? <span className="flex items-center gap-1 text-xs text-slate-500"><Lock className="w-3.5 h-3.5" /> Questionnaire first</span>
+                  : <span className="flex items-center gap-1 text-xs text-slate-500 group-hover:text-blue-700">
                     <Play className="w-3.5 h-3.5" /> Start
                   </span>
                 )}
                 <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-500" />
               </div>
             </div>
-          </Link>
-        ))}
+          </Card>
+          );
+        })}
       </div>
     </div>
   );

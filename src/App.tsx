@@ -15,6 +15,8 @@ const DataExport = lazy(() => import('@/pages/DataExport'));
 const SystemSettingsPage = lazy(() => import('@/pages/SystemSettingsPage'));
 const SessionTimeline = lazy(() => import('@/pages/SessionTimeline'));
 const SessionAssessment = lazy(() => import('@/pages/SessionAssessment'));
+const SurveyPage = lazy(() => import('@/pages/SurveyPage'));
+const SurveyManagement = lazy(() => import('@/pages/SurveyManagement'));
 
 function PageLoading() {
   return <div className="py-24 flex items-center justify-center text-slate-400 text-sm" role="status">Loading...</div>;
@@ -68,6 +70,8 @@ function AppRoutes() {
         <Route path="/researcher/temporal-analysis" element={<ProtectedRoute requireRole="researcher"><AppShell><TemporalAnalysis /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/session/:sessionId" element={<ProtectedRoute requireRole="researcher"><AppShell><SessionTimeline /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/session/:sessionId/assessment" element={<ProtectedRoute requireRole="researcher"><AppShell><SessionAssessment /></AppShell></ProtectedRoute>} />
+        <Route path="/survey/:surveyId" element={<ProtectedRoute requireRole="student"><AppShell><SurveyPage /></AppShell></ProtectedRoute>} />
+        <Route path="/researcher/surveys" element={<ProtectedRoute requireRole="researcher"><AppShell><SurveyManagement /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/tasks" element={<ProtectedRoute requireRole="researcher"><AppShell><TaskManagement /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/export" element={<ProtectedRoute requireRole="researcher"><AppShell><DataExport /></AppShell></ProtectedRoute>} />
         <Route path="/researcher/settings" element={<ProtectedRoute requireRole="researcher"><AppShell><SystemSettingsPage /></AppShell></ProtectedRoute>} />

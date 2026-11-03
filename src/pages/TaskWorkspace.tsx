@@ -8,6 +8,7 @@ import { runPythonCode, runTestCases, type TestCaseResult } from '@/lib/codeRunn
 import { preloadPython } from '@/lib/python/browserRunner';
 import CodeEditor from '@/components/CodeEditor';
 import { useActivityTracking } from '@/lib/useActivityTracking';
+import { loadSurveyStatus } from '@/lib/surveyGate';
 import { diffStats } from '@/lib/provenance';
 import { callEdgeFunction } from '@/lib/edgeFunctions';
 import { AI_CATEGORIES, AI_CATEGORY_LABELS, AI_HELP_REFLECTION_OPTIONS, PHASE_COLORS, PHASE_LABELS, REFLECT_CONSTANTS, ACCURACY_JUDGMENT_OPTIONS, INTENDED_ACTION_OPTIONS } from '@/lib/constants';
@@ -188,6 +189,8 @@ export default function TaskWorkspace() {
       const result = await supabase.from('sessions').select('*, task:tasks(*)').eq('id', sessionId).maybeSingle();
       activeSession = result.data as Session | null;
     } else if (taskId) {
+      const gate = await loadSurveyStatus(profile.id, false);
+      if (gate.blocking.length > 0) { setError(`Please complete the questionnaire "${gate.blocking[0].title}" on your dashboard before starting a task.`); setLoading(false); return; }
       const result = await supabase.from('tasks').select('*').eq('id', taskId).maybeSingle();
       const foundTask = result.data as Task | null;
       if (foundTask) {

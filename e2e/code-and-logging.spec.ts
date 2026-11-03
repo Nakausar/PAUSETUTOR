@@ -153,8 +153,8 @@ test('optional scrutiny answers are saved and logged when given', async ({ page 
   await page.getByRole('button', { name: 'Reject suggestion' }).click();
   await expect.poll(() => db.scrutiny_responses[0]).toMatchObject({ accuracy_judgment: 'incorrect', intended_action: 'own_version', critique_text: 'range(1, n) skips 0, which is even.', action_taken: 'rejected' });
   await expect.poll(() => db.event_logs.find((e) => e.event_type === 'SCRUTINISE_SUBMITTED')?.metadata).toMatchObject({ optional_answered_count: 2 });
-  const types = db.event_logs.map((e) => e.event_type);
-  expect(types).toEqual(expect.arrayContaining(['INTENDED_AI_UPTAKE', 'AI_CRITIQUE_TEXT', 'AI_SUGGESTION_REJECTED']));
+  // Events are logged one after another, so wait for the last one.
+  await expect.poll(() => db.event_logs.map((e) => e.event_type)).toEqual(expect.arrayContaining(['INTENDED_AI_UPTAKE', 'AI_CRITIQUE_TEXT', 'AI_SUGGESTION_REJECTED']));
 });
 
 test('a task without AI goes Plan → Attempt → Evaluate and keeps Use AI locked', async ({ page }) => {

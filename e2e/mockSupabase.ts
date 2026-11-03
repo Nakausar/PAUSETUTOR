@@ -74,7 +74,8 @@ export async function installMockSupabase(page: Page, db: MockDb, options: MockO
     const rows = (db[table] ??= []);
     const params = [...url.searchParams.entries()];
     const wantsObject = (req.headers()['accept'] || '').includes('vnd.pgrst.object');
-    const embedTask = table === 'sessions' && (url.searchParams.get('select') || '').includes('task:tasks');
+    // Embedded task, e.g. sessions?select=*,task:tasks(*) or task_assignments?select=*,task:tasks(*)
+    const embedTask = (url.searchParams.get('select') || '').includes('task:tasks');
     const shape = (r: Row) => (embedTask ? { ...r, task: (db.tasks ?? []).find((t) => t.id === r.task_id) } : r);
     const reply = (result: Row[]) => {
       if (!wantsObject) return json(result.map(shape));

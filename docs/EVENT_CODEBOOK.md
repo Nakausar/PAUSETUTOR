@@ -118,6 +118,20 @@ Limitations: pastes from outside the browser tab (e.g. another AI tool) are `non
 * **Test prediction calibration:** one row per test run with a prediction (monitoring accuracy). `bias` = (predicted − actual) / total, so > 0 is over-confident and < 0 under-confident; `abs_error` = |predicted − actual| / total; plus `confidence`, `ms_to_predict`, `predicted_all_pass`, `actual_all_pass`. Test runs that failed for system reasons, and runs recorded before predictions were introduced, are excluded.
 * **AI reliance per session:** counts and durations per session, plus `final_code_ai_similarity`: the share of identical non-empty lines between the final code and the code blocks in that session's AI responses (0–1).
 
+## Questionnaires
+
+Questionnaires are stored in `surveys` (definitions) and `survey_responses` (one submission per participant per questionnaire; it cannot be changed after submitting). They are not part of `event_logs`.
+
+| Kind | Shown to students |
+|---|---|
+| `pre` | From the start. If **required before tasks**, students cannot start a task until it is submitted |
+| `post` | Once all of the student's assigned tasks are completed |
+| `other` | Whenever it is active |
+
+Question types: `likert5` / `likert7` (1 = strongly disagree), `choice`, `text`. Exports: **Questionnaire responses (wide)** (one row per participant and questionnaire; columns are question ids, prefixed with the questionnaire title when two questionnaires share an id; `duration_seconds`; `sus_score`), **(long)** (one row per answer) and **Questionnaire definitions**.
+
+The built-in **System Usability Scale** template (Brooke, 1996) is scored 0–100: odd items contribute (answer − 1), even items (5 − answer), and the sum is multiplied by 2.5. The **Background** and **Study reflection** templates are examples, not validated instruments; replace or extend them with the items of the instruments named in your ethics application.
+
 ### Reading the exports in R
 
 ```r

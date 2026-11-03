@@ -16,6 +16,8 @@ Technical definitions are in [EVENT_CODEBOOK.md](EVENT_CODEBOOK.md).
 * **Scrutiny** judgments of AI answers, critiques and decisions (accept / modify / reject).
 * **Reflections** at the end of each task.
 
+* **Questionnaires** set up by the researchers (for example background, prior experience with programming and AI, usability), with the time taken to complete them.
+
 ## Interaction behaviour
 * Time-stamped **events** for each action above and each move between phases.
 * **Pastes** into any text field: which field, the length and the first 5,000 characters, and whether the text matches an AI answer.
