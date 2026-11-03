@@ -1,3 +1,4 @@
+import { callEdgeFunction } from './edgeFunctions';
 
 export interface RunResult {
   output: string;
@@ -10,7 +11,7 @@ export interface RunResult {
 
 /**
  * Executes Python code by calling the `run-python` edge function.
- * The edge function forwards to the Piston sandboxed execution API.
+ * The edge function forwards to the Judge0 sandboxed execution API.
  * Returns combined stdout/stderr and a structured result.
  *
  * `systemError` is true when the failure is infrastructure (HTTP 500, network),
@@ -18,19 +19,8 @@ export interface RunResult {
  * in that case so research analytics don't conflate the two.
  */
 export async function runPythonCode(code: string, stdin: string = ''): Promise<RunResult> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-  const url = `${supabaseUrl}/functions/v1/run-python`;
-
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${anonKey}`,
-      },
-      body: JSON.stringify({ code, stdin }),
-    });
+    const response = await callEdgeFunction('run-python', { code, stdin });
 
     const data = await response.json().catch(() => null) as {
       stdout?: string;

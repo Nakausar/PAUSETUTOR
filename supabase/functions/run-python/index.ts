@@ -1,4 +1,5 @@
-import { corsHeaders } from "./cors.ts";
+import { buildCorsHeaders } from "./cors.ts";
+import { getCaller } from "./auth.ts";
 
 const JUDGE0_URL = "https://ce.judge0.com";
 const PYTHON_LANG_ID = 71;
@@ -18,12 +19,28 @@ interface Judge0Submission {
 }
 
 Deno.serve(async (req: Request) => {
+  const corsHeaders = buildCorsHeaders(req);
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   try {
+    // Only signed-in users may execute code.
+    const caller = await getCaller(req);
+    if (!caller) {
+      return new Response(
+        JSON.stringify({ stdout: "", stderr: "Please sign in again.", exitCode: 1, error: "UNAUTHORIZED", systemError: true }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const { code, stdin } = await req.json() as { code: string; stdin?: string };
+    if (typeof code === "string" && code.length > 50000) {
+      return new Response(
+        JSON.stringify({ stdout: "", stderr: "Code is too long to run (max 50,000 characters).", exitCode: 1, error: "CODE_TOO_LONG", systemError: false }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
 
     if (typeof code !== "string") {
       return new Response(

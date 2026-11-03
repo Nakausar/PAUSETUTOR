@@ -1,6 +1,8 @@
-import { corsHeaders } from "./cors.ts";
+import { buildCorsHeaders } from "./cors.ts";
+import { getCaller } from "./auth.ts";
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
+const OPENAI_MODEL = Deno.env.get("OPENAI_ASSESSOR_MODEL") ?? Deno.env.get("OPENAI_MODEL") ?? "gpt-4o-mini";
 
 const METACOG_RATINGS = ["excellent", "good", "needs_improvement", "not_observed", "not_applicable"];
 
@@ -22,11 +24,21 @@ interface AssessRequest {
 }
 
 Deno.serve(async (req: Request) => {
+  const corsHeaders = buildCorsHeaders(req);
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   try {
+    // Only signed-in researchers may request assessments.
+    const caller = await getCaller(req);
+    if (!caller || caller.role !== "researcher") {
+      return new Response(
+        JSON.stringify({ error: "Only signed-in researchers can generate assessments." }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const body = await req.json() as AssessRequest;
 
     if (!body.evidence || typeof body.evidence !== "object") {
@@ -161,7 +173,7 @@ In evidence_refs, list the identifiers of the records your ratings are based on.
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: OPENAI_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: evidenceText },

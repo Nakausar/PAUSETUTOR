@@ -95,7 +95,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data, error } = await supabase.auth.signUp({
       email: email.trim().toLowerCase(),
       password,
-      options: { data: { role, consent_acknowledged: consent } },
+      // Role is NOT sent: every new account is a student. Researchers are promoted
+      // by the study team in the database.
+      options: { data: { consent_acknowledged: consent } },
     });
     if (error) {
       console.error('Signup failed:', { message: error.message, name: error.name, status: error.status });
