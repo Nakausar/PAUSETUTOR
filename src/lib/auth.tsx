@@ -24,7 +24,7 @@ function formatAuthError(message: string, action: 'signin' | 'signup'): string {
     return 'The email or password is incorrect. Please check them and try again.';
   }
   if (normalized.includes('email not confirmed')) {
-    return 'This account still needs email confirmation. Please contact the study team while confirmation is being disabled.';
+    return 'Please confirm your email first: open the link in the email we sent you (check your spam folder too), then sign in.';
   }
   if (normalized.includes('password') && normalized.includes('at least')) {
     return 'Your password must be at least 6 characters long.';
@@ -32,8 +32,20 @@ function formatAuthError(message: string, action: 'signin' | 'signup'): string {
   if (normalized.includes('weak') || normalized.includes('easy to guess')) {
     return 'That password is too common or easy to guess. Please choose a stronger, more unique password.';
   }
+  if (normalized.includes('email rate limit') || (normalized.includes('rate limit') && normalized.includes('email'))) {
+    return 'Too many sign-up emails have been sent in the last hour. Please try again later, or ask the study team for help.';
+  }
   if (normalized.includes('rate limit') || normalized.includes('too many')) {
     return 'Too many attempts were made. Please wait a moment and try again.';
+  }
+  if (normalized.includes('not authorized') || (normalized.includes('not allowed') && normalized.includes('email'))) {
+    return 'We could not send a confirmation email to this address. Please ask the study team for help.';
+  }
+  if (normalized.includes('invalid api key') || normalized.includes('no api key')) {
+    return 'The app is not connected to its database correctly. Please tell the study team.';
+  }
+  if (normalized.includes('signups not allowed') || normalized.includes('signup is disabled')) {
+    return 'Creating new accounts is switched off at the moment. Please ask the study team.';
   }
   if (normalized.includes('network') || normalized.includes('fetch')) {
     return 'The service could not be reached. Check your connection and try again.';
@@ -108,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!data.session) {
       const signInResult = await signIn(email, password);
       if (signInResult.error) {
-        return { error: 'Your account was created, but it is not active yet. Please try again or contact the study team.' };
+        return { error: 'Your account was created. Please confirm your email: open the link in the email we sent you (check your spam folder too), then sign in.' };
       }
       return signInResult;
     }
